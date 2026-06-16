@@ -1,0 +1,196 @@
+name: build-release
+
+# Builds installers and attaches them to a GitHub Release.
+# Fires automatically when release-please publishes a release; can also be run
+# by hand against an existing tag via the "Run workflow" button.
+#
+# macOS signing is progressive:
+#   * no secrets  -> ad-hoc signature (works; user runs a one-line quarantine fix,
+#                    see README "Installing on macOS").
+#   * Developer ID secrets present -> real Developer ID signature + notarization,
+#                    so the app opens with zero warnings. Add these repo secrets:
+#       MACOS_DEVELOPER_ID          e.g. "Developer ID Application: Name (TEAMID)"
+#       MACOS_CERTIFICATE_P12       base64 of the exported .p12
+#       MACOS_CERTIFICATE_PASSWORD  password used when exporting the .p12
+#       MACOS_NOTARY_APPLE_ID       Apple ID email
+#       MACOS_NOTARY_TEAM_ID        10-char Team ID
+#       MACOS_NOTARY_PASSWORD       app-specific password (appleid.apple.com)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build & attach to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  PY_VERSION: "3.11"
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+      - name: Build .app
+        run: |
+          python -m PyInstaller --noconfirm --windowed --name "HPC3-Launcher" \
+            --paths hpc3_launcher \
+            --add-data "hpc3_launcher/resources:resources" \
+            --hidden-import paramiko --hidden-import pexpect \
+            --hidden-import cryptography --hidden-import bcrypt --hidden-import nacl \
+            --hidden-import requests --hidden-import packaging --hidden-import packaging.version \
+            --hidden-import PyQt5 --hidden-import PyQt5.QtWidgets \
+            --hidden-import PyQt5.QtCore --hidden-import PyQt5.QtGui \
+            --osx-bundle-identifier edu.uci.hpc3launcher \
+            --icon hpc3_launcher/resources/icon.icns \
+            hpc3_launcher/main.py
+      - name: Sign app (Developer ID if available, else ad-hoc)
+        env:
+          DEVID: ${{ secrets.MACOS_DEVELOPER_ID }}
+          CERT_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          APP="dist/HPC3-Launcher.app"
+          if [ -n "$CERT_P12" ] && [ -n "$DEVID" ]; then
+            echo "Signing with Developer ID"
+            KC=build.keychain; KCPWD=$(uuidgen)
+            security create-keychain -p "$KCPWD" "$KC"
+            security set-keychain-settings -lut 21600 "$KC"
+            security unlock-keychain -p "$KCPWD" "$KC"
+            echo "$CERT_P12" | base64 --decode > cert.p12
+            security import cert.p12 -k "$KC" -P "$CERT_PWD" -T /usr/bin/codesign
+            security list-keychains -d user -s "$KC" login.keychain
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPWD" "$KC"
+            codesign --force --deep --options runtime --timestamp --sign "$DEVID" "$APP"
+            rm -f cert.p12
+          else
+            echo "No Developer ID secrets -> ad-hoc signature"
+            codesign --force --deep --sign - "$APP"
+          fi
+          codesign --verify --verbose=2 "$APP" || true
+      - name: Build DMG (+ notarize if creds present)
+        env:
+          APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          APP_PWD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          python create_dmg.py
+          DMG=$(ls HPC3-Launcher-*-macos.dmg | head -1)
+          if [ -n "$APPLE_ID" ] && [ -n "$TEAM_ID" ] && [ -n "$APP_PWD" ]; then
+            echo "Notarizing $DMG"
+            xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" \
+              --team-id "$TEAM_ID" --password "$APP_PWD" --wait
+            xcrun stapler staple "$DMG"
+          else
+            echo "No notarization creds -> shipping ad-hoc DMG (see README install steps)"
+          fi
+      - name: Attach DMG to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" HPC3-Launcher-*-macos.dmg --clobber
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+      - name: Build .exe
+        run: |
+          python -m PyInstaller --noconfirm --windowed --name "HPC3-Launcher" `
+            --paths hpc3_launcher `
+            --add-data "hpc3_launcher/resources;resources" `
+            --hidden-import paramiko --hidden-import pexpect `
+            --hidden-import cryptography --hidden-import bcrypt --hidden-import nacl `
+            --hidden-import requests --hidden-import packaging --hidden-import packaging.version `
+            --hidden-import PyQt5 --hidden-import PyQt5.QtWidgets `
+            --hidden-import PyQt5.QtCore --hidden-import PyQt5.QtGui `
+            --icon hpc3_launcher/resources/icon.ico `
+            hpc3_launcher/main.py
+      - name: Zip + attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "HPC3-Launcher-$env:TAG-windows.zip"
+          Compress-Archive -Path dist/HPC3-Launcher/* -DestinationPath $zip
+          gh release upload "$env:TAG" $zip --clobber
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev libgl1 fakeroot
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+      - name: Build + package .deb
+        run: |
+          python -m PyInstaller --noconfirm --windowed --name "HPC3-Launcher" \
+            --paths hpc3_launcher \
+            --add-data "hpc3_launcher/resources:resources" \
+            --hidden-import paramiko --hidden-import pexpect \
+            --hidden-import cryptography --hidden-import bcrypt --hidden-import nacl \
+            --hidden-import requests --hidden-import packaging --hidden-import packaging.version \
+            --hidden-import PyQt5 --hidden-import PyQt5.QtWidgets \
+            --hidden-import PyQt5.QtCore --hidden-import PyQt5.QtGui \
+            --icon hpc3_launcher/resources/icon.png \
+            hpc3_launcher/main.py
+          VERSION="${TAG#v}"
+          PKG=dist/deb-package
+          mkdir -p $PKG/DEBIAN $PKG/usr/local/bin $PKG/usr/share/applications \
+                   $PKG/usr/share/icons/hicolor/256x256/apps
+          cp -r dist/HPC3-Launcher/* $PKG/usr/local/bin/
+          cp hpc3_launcher/resources/icon.png $PKG/usr/share/icons/hicolor/256x256/apps/hpc3-launcher.png
+          cat > $PKG/usr/share/applications/hpc3-launcher.desktop <<EOF
+          [Desktop Entry]
+          Name=HPC3 Launcher
+          Comment=Launch and manage UCI HPC3 jobs, nodes, VSCode sessions and SU balance
+          Exec=/usr/local/bin/HPC3-Launcher
+          Icon=/usr/share/icons/hicolor/256x256/apps/hpc3-launcher.png
+          Terminal=false
+          Type=Application
+          Categories=Utility;Science;
+          EOF
+          cat > $PKG/DEBIAN/control <<EOF
+          Package: hpc3-launcher
+          Version: ${VERSION:-0.0.0}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libc6, libgl1
+          Maintainer: Molloi Lab
+          Description: HPC3 Launcher
+           A desktop launcher for UCI's HPC3 cluster: jobs, nodes, VSCode remote
+           sessions and SU balance.
+          EOF
+          fakeroot dpkg-deb --build $PKG "HPC3-Launcher-${VERSION:-0.0.0}-linux.deb"
+      - name: Attach .deb to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" HPC3-Launcher-*-linux.deb --clobber

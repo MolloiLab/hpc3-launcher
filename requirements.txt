@@ -1,0 +1,10 @@
+PyQt5==5.15.10
+paramiko==3.3.1
+pexpect==4.8.0
+cryptography==41.0.7
+bcrypt==4.1.2
+pynacl==1.5.0
+requests==2.31.0
+packaging==24.1
+PyInstaller==6.13.0
+Pillow==10.4.0 

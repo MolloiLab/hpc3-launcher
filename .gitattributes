@@ -1,0 +1,26 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Source code
+*.py text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.md text
+*.txt text
+*.yml text eol=lf
+*.spec text eol=lf
+
+# Binary files (should not be modified)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.dmg binary
+*.exe binary
+*.deb binary
+*.app binary
+*.dll binary
+*.so binary
+*.dylib binary 

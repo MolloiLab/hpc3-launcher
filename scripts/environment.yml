@@ -1,0 +1,14 @@
+name: hpc-mgmt
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip=25.0.1
+  - pyqt=5.15
+  - pip:
+    - paramiko==3.5.1
+    - pexpect==4.9.0
+    - bcrypt==4.3.0
+    - cryptography==44.0.2
+    - pyinstaller==6.6.0 

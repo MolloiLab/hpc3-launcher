@@ -1,0 +1,25 @@
+name: release-please
+
+# Conventional-commit driven releases. On every push to main, release-please
+# maintains a "Release PR" that bumps the version (in .release-please-manifest.json
+# and the `# x-release-please-version` line in updater.py) and the CHANGELOG.
+# Merging that PR creates a vX.Y.Z tag + GitHub Release, which fires release.yml
+# to build and attach the installers.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

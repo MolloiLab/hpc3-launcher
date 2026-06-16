@@ -1,0 +1,46 @@
+name: HPC3 Launcher CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.8
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.8
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install flake8 pytest
+        if [ -f requirements.txt ]; then 
+          # Install basic requirements without GUI dependencies which might fail in CI
+          pip install packaging requests
+        fi
+    
+    - name: Lint with flake8
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    
+    - name: Basic Python syntax checking
+      run: |
+        # Check Python syntax without running the actual code
+        python -m py_compile hpc3_launcher/main.py
+        python -m py_compile hpc3_launcher/modules/updater.py
+        python -m py_compile hpc3_launcher/ui/update_dialog.py
+        
+    - name: Check Python version
+      run: |
+        python --version 

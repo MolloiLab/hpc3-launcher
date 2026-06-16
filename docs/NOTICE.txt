@@ -1,0 +1,25 @@
+HPC Management System
+Copyright (c) 2024 Song Liangyu and contributors
+
+This software uses the following open source packages, which are hereby acknowledged:
+
+1. PyQt5 (LGPL-2.1)
+PyQt5 is the Python bindings for the Qt framework, used under the LGPL-2.1 license.
+https://www.riverbankcomputing.com/software/pyqt/
+
+2. Paramiko (LGPL-2.1)
+Paramiko is a Python implementation of the SSH protocol, used under the LGPL-2.1 license.
+https://github.com/paramiko/paramiko
+
+3. PyInstaller (GPL-2.0 with exceptions)
+PyInstaller packages Python programs into executables, provided under the GPL license with special exception clauses that allow packaging commercial applications.
+https://pyinstaller.org/
+
+4. pexpect (ISC License)
+pexpect is a Python implementation of expect, used for controlling interactive programs.
+https://github.com/pexpect/pexpect
+
+5. bcrypt/cryptography/PyCrypto (MIT/Apache-2.0/Public Domain)
+These packages are used for encryption functionality and are primarily distributed under MIT or Apache licenses.
+
+Distribution of this software should comply with the terms of the MIT license, while respecting the license requirements of the third-party libraries used. In particular, if LGPL-licensed components are modified, these modifications must be distributed under the terms of the LGPL. 

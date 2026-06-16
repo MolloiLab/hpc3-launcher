@@ -1,0 +1,106 @@
+# Python bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+build_tmp/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+*_env/
+
+# IDE project settings
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# HPC3 Launcher specific
+# Don't ignore release packages
+# *.app
+# *.pkg
+# *.exe
+# *.dmg
+# *.deb
+# *.rpm
+
+# Keep spec files
+!HPC3-Launcher.spec
+
+# Testing files
+update_test/
+
+# Logs
+logs/
+*.log
+
+# Backups during development
+*.bak
+*.old
+*.backup
+
+# HPC Management System specific
+# Don't ignore release packages
+# *.app
+# *.pkg
+# *.exe
+# *.dmg
+# *.deb
+# *.rpm
+
+# Keep spec file
+!HpcManagementSystem.spec 
+# Build artifacts (installers + generated PyInstaller spec at repo root)
+.venv/
+*.dmg
+*.zip
+*.deb
+/HPC3-Launcher.spec
