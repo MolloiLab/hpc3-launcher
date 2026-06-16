@@ -45,6 +45,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller pillow
+          # setuptools >=71 vendors backports.tarfile, which PyInstaller's
+          # pkg_resources runtime hook fails to collect ("No module named
+          # 'backports'" at launch). Pin below that so the frozen app starts.
+          pip install "setuptools<71"
       - name: Build .app
         run: |
           python -m PyInstaller --noconfirm --windowed --name "HPC3-Launcher" \
@@ -115,6 +119,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller pillow
+          # setuptools >=71 vendors backports.tarfile, which PyInstaller's
+          # pkg_resources runtime hook fails to collect ("No module named
+          # 'backports'" at launch). Pin below that so the frozen app starts.
+          pip install "setuptools<71"
       - name: Build .exe
         run: |
           python -m PyInstaller --noconfirm --windowed --name "HPC3-Launcher" `
@@ -150,6 +158,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller pillow
+          # setuptools >=71 vendors backports.tarfile, which PyInstaller's
+          # pkg_resources runtime hook fails to collect ("No module named
+          # 'backports'" at launch). Pin below that so the frozen app starts.
+          pip install "setuptools<71"
       - name: Build + package .deb
         run: |
           python -m PyInstaller --noconfirm --windowed --name "HPC3-Launcher" \
