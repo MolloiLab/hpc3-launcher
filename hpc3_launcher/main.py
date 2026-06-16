@@ -92,7 +92,9 @@ class MainWindow(QMainWindow):
         self.sidebar.setCurrentRow(0)
 
         # A quiet update check shortly after startup (non-blocking, no auto-install).
-        QTimer.singleShot(3000, lambda: check_for_updates_with_ui(self, silent=True))
+        # Skipped under the headless CI self-test so it never reaches the network.
+        if not os.environ.get("HPC3_SMOKE_TEST"):
+            QTimer.singleShot(3000, lambda: check_for_updates_with_ui(self, silent=True))
 
     @staticmethod
     def _wrap(widget):
@@ -142,10 +144,48 @@ class MainWindow(QMainWindow):
             event.ignore()
 
 
+def _run_smoke_test(app):
+    """Headless self-test used by CI to prove the packaged app really launches.
+
+    Builds the main window, confirms the Qt event loop actually starts, writes a
+    marker file (named by HPC3_SMOKE_MARKER) and quits. No login or SSH is
+    involved: the fake username has no saved key, so every key-gated background
+    load short-circuits and nothing touches the network. The marker file -- not
+    the process exit code -- is the pass/fail signal, so any background worker
+    teardown noise at interpreter shutdown can't produce a false failure.
+
+    Enabled by HPC3_SMOKE_TEST=1; pair with QT_QPA_PLATFORM=offscreen on a
+    headless runner. This proves: bundled imports resolve, the Qt platform
+    plugin loads, QApplication + the full main window construct, and the event
+    loop runs -- exactly the things that silently fail in a broken build.
+    """
+    window = MainWindow(username="smoketest", node_info=None)
+    window.show()
+
+    def _confirm():
+        message = ("SMOKE OK: imports loaded, Qt platform plugin up, "
+                   "main window constructed, event loop running")
+        marker = os.environ.get("HPC3_SMOKE_MARKER")
+        if marker:
+            try:
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write(message + "\n")
+            except OSError as exc:
+                print(f"SMOKE WARN: could not write marker {marker}: {exc}", flush=True)
+        print(message, flush=True)
+        app.quit()
+
+    QTimer.singleShot(1500, _confirm)
+    return app.exec_()
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(app_icon())
+
+    if os.environ.get("HPC3_SMOKE_TEST"):
+        return _run_smoke_test(app)
 
     login = LoginDialog()
     if login.exec_() != QDialog.Accepted:

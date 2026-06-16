@@ -131,7 +131,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $zip = "HPC3-Launcher-$env:TAG-windows.zip"
+          $ver = $env:TAG -replace '^v',''
+          $zip = "HPC3-Launcher-$ver-windows.zip"
           Compress-Archive -Path dist/HPC3-Launcher/* -DestinationPath $zip
           gh release upload "$env:TAG" $zip --clobber
 
@@ -194,3 +195,95 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" HPC3-Launcher-*-linux.deb --clobber
+
+  # ---- Verification: download the PUBLISHED installer for each OS and actually
+  # launch it headlessly, proving the distributed package runs on a clean machine
+  # (the class of failure the Windows build used to hit). Each job downloads the
+  # asset just uploaded above, installs/extracts it exactly as a user would, then
+  # runs the frozen binary with HPC3_SMOKE_TEST=1 + QT_QPA_PLATFORM=offscreen.
+  # The app builds its full main window, confirms the Qt event loop starts, and
+  # writes a marker file; the job passes only if that marker says "SMOKE OK".
+
+  verify-macos:
+    needs: macos
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download published DMG, mount and launch headless
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir verify && cd verify
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p "HPC3-Launcher-*-macos.dmg" --clobber
+          DMG=$(ls HPC3-Launcher-*-macos.dmg | head -1)
+          echo "Mounting $DMG"
+          hdiutil attach "$DMG" -mountpoint mnt -nobrowse -quiet
+          cp -R "mnt/HPC3-Launcher.app" ./HPC3-Launcher.app
+          hdiutil detach mnt -quiet
+          xattr -dr com.apple.quarantine ./HPC3-Launcher.app || true
+          export HPC3_SMOKE_TEST=1 HPC3_SMOKE_MARKER="$PWD/marker.txt" QT_QPA_PLATFORM=offscreen
+          ( ./HPC3-Launcher.app/Contents/MacOS/HPC3-Launcher & APP=$!; \
+            for i in $(seq 1 30); do kill -0 $APP 2>/dev/null || break; sleep 1; done; \
+            kill -9 $APP 2>/dev/null || true ) || true
+          if grep -q "SMOKE OK" marker.txt 2>/dev/null; then
+            echo "PASS (macOS): $(cat marker.txt)"
+          else
+            echo "FAIL (macOS): packaged app did not reach the Qt event loop"; exit 1
+          fi
+
+  verify-windows:
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download published zip, extract and launch headless
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force verify | Out-Null
+          Set-Location verify
+          gh release download "$env:TAG" --repo "$env:GITHUB_REPOSITORY" -p "HPC3-Launcher-*-windows.zip" --clobber
+          $zip = Get-ChildItem "HPC3-Launcher-*-windows.zip" | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath app -Force
+          $exe = Get-ChildItem -Path app -Filter HPC3-Launcher.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "HPC3-Launcher.exe not found inside the published zip" }
+          $env:HPC3_SMOKE_TEST = "1"
+          $env:HPC3_SMOKE_MARKER = "$PWD\marker.txt"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          try { Wait-Process -Id $p.Id -Timeout 60 } catch { }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if ((Test-Path marker.txt -PathType Leaf) -and ((Get-Content marker.txt -Raw) -match "SMOKE OK")) {
+            Write-Host "PASS (Windows): $(Get-Content marker.txt -Raw)"
+          } else {
+            Write-Host "FAIL (Windows): packaged app did not reach the Qt event loop"; exit 1
+          }
+
+  verify-linux:
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download published .deb, install and launch headless
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libglib2.0-0 libfontconfig1 libxkbcommon0 libdbus-1-3
+          mkdir verify && cd verify
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p "HPC3-Launcher-*-linux.deb" --clobber
+          DEB=$(ls HPC3-Launcher-*-linux.deb | head -1)
+          sudo apt-get install -y "./$DEB"
+          export HPC3_SMOKE_TEST=1 HPC3_SMOKE_MARKER="$PWD/marker.txt" QT_QPA_PLATFORM=offscreen
+          ( /usr/local/bin/HPC3-Launcher & APP=$!; \
+            for i in $(seq 1 30); do kill -0 $APP 2>/dev/null || break; sleep 1; done; \
+            kill -9 $APP 2>/dev/null || true ) || true
+          if grep -q "SMOKE OK" marker.txt 2>/dev/null; then
+            echo "PASS (Linux): $(cat marker.txt)"
+          else
+            echo "FAIL (Linux): packaged app did not reach the Qt event loop"; exit 1
+          fi
