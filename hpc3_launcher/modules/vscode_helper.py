@@ -32,6 +32,12 @@ def _config_block_re(job_id=r".*?"):
     )
 
 
+# Serializes every read-modify-write of ~/.ssh/config. Each running VSCode
+# session polls on its own thread and they all edit this one file, so without a
+# lock two sessions starting together can clobber each other's config block.
+_SSH_CONFIG_LOCK = threading.Lock()
+
+
 class VSCodeManager(QObject):
     """
     VSCode server manager responsible for submitting and managing VSCode server jobs
@@ -711,13 +717,7 @@ class VSCodeManager(QObject):
             
             # Configuration file path
             config_file = os.path.join(ssh_dir, "config")
-            
-            # Read existing configuration
-            existing_config = ""
-            if os.path.exists(config_file):
-                with open(config_file, 'r') as f:
-                    existing_config = f.read()
-            
+
             # Configuration to add (with marked comments for later removal)
             hostname = config.get('hostname')
             
@@ -763,23 +763,38 @@ Host {hostname}
 # === END HPC3 Launcher VSCode (JobID: {job_id}) ===
 """
 
-            # Remove any block we previously wrote (new or legacy marker) first.
-            existing_config = _config_block_re().sub('', existing_config)
-            
-            # Add new configuration to the end of the file
-            with open(config_file, 'w') as f:
-                if existing_config.strip():
-                    f.write(existing_config.rstrip() + "\n")
-                f.write(new_config)
-            
-            # Set correct permissions
-            os.chmod(config_file, 0o600)
-            
+            # Read-modify-write under the lock so concurrent sessions don't clobber.
+            with _SSH_CONFIG_LOCK:
+                existing_config = ""
+                if os.path.exists(config_file):
+                    with open(config_file, 'r') as f:
+                        existing_config = f.read()
+                # Remove only THIS job's previous block, then append the fresh one.
+                # (The bug was calling _config_block_re() with no job_id: its default
+                # `.*?` matched EVERY session, so writing one session's block deleted
+                # all the others -- which is why a 2nd session wiped the 1st's config.)
+                existing_config = _config_block_re(re.escape(str(job_id))).sub('', existing_config)
+                with open(config_file, 'w') as f:
+                    if existing_config.strip():
+                        f.write(existing_config.rstrip() + "\n")
+                    f.write(new_config)
+                os.chmod(config_file, 0o600)
+
             logger.info(f"SSH configuration for job {job_id} added to {config_file}")
             
         except Exception as e:
             logger.error(f"Failed to add SSH configuration to local file: {e}")
             self.error_occurred.emit(f"Failed to add SSH configuration: {str(e)}")
+
+    def ensure_ssh_config(self, job_id):
+        """Parse a running job's connection info and make sure its ~/.ssh/config
+        block exists (idempotent, job-specific). Lets the UI heal a missing block
+        just by selecting the session, and returns the parsed config for display."""
+        config = self._parse_vscode_config(job_id)
+        if config and config.get('hostname'):
+            self._add_ssh_config_to_local(job_id, config)
+            self.config_written_jobs.add(job_id)
+        return config
 
     def _remove_ssh_config_from_local(self, job_id):
         """
@@ -797,26 +812,21 @@ Host {hostname}
                 logger.warning(f"SSH configuration file does not exist: {config_file}")
                 return
             
-            # Read existing configuration
-            with open(config_file, 'r') as f:
-                existing_config = f.read()
-            
-            # Use regex to match and remove specified job's configuration
+            # Remove only this job's block, under the lock (other sessions may be
+            # editing the same file). Matching is job-specific via re.escape.
             pattern = _config_block_re(re.escape(str(job_id)))
+            removed = False
+            with _SSH_CONFIG_LOCK:
+                with open(config_file, 'r') as f:
+                    existing_config = f.read()
+                if pattern.search(existing_config):
+                    with open(config_file, 'w') as f:
+                        f.write(pattern.sub('', existing_config))
+                    removed = True
 
-            # Check if matching configuration exists
-            match = pattern.search(existing_config)
-            if match:
-                # Replace matched part with empty string
-                new_config = pattern.sub('', existing_config)
-                
-                # Write back to file
-                with open(config_file, 'w') as f:
-                    f.write(new_config)
+            if removed:
                 logger.info(f"SSH configuration for job {job_id} removed from {config_file}")
-                
-                # Emit signal to notify configuration removed
-                self.ssh_config_removed.emit(job_id)
+                self.ssh_config_removed.emit(job_id)  # outside the lock (no signal while held)
             else:
                 logger.info(f"SSH configuration for job {job_id} not found in {config_file}, no removal needed")
         except Exception as e:

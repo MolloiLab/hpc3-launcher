@@ -267,8 +267,9 @@ class VSCodeWidget(QWidget):
             self._fetch_config_for(jid)
 
     def _fetch_config_for(self, jid):
-        """Parse one session's connection config on a worker thread, lazily."""
-        worker = SSHWorker(lambda rep: self.vscode_manager._parse_vscode_config(jid),
+        """Parse one session's connection config on a worker thread, lazily, and
+        ensure its ~/.ssh/config block exists (heals a missing/clobbered block)."""
+        worker = SSHWorker(lambda rep: self.vscode_manager.ensure_ssh_config(jid),
                            parent=self, label="vscode-config")
         worker.succeeded.connect(
             lambda cfg: self._upsert_session({'job_id': jid, 'config': cfg,
