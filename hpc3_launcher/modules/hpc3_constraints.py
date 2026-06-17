@@ -31,12 +31,15 @@ import math
 #   family   : which partition family this GPU lives in
 #   max_gpus : most GPUs of this type on a single node (max --gres count)
 #   max_cpus : CPU cores on that node type (max --cpus-per-task)
+#   vram_gb  : GPU memory per card, shown in the picker. HPC3's RTX6000 is the
+#              96 GB "RTX PRO 6000 Blackwell" (verified live via nvidia-smi, not
+#              the 24/48 GB older Quadro/Ada cards).
 GPU_MODELS = {
-    "V100":    {"family": "gpu",   "max_gpus": 4, "max_cpus": 40},
-    "A30":     {"family": "gpu",   "max_gpus": 4, "max_cpus": 32},
-    "A100":    {"family": "gpu",   "max_gpus": 2, "max_cpus": 32},
-    "L40S":    {"family": "gpu32", "max_gpus": 4, "max_cpus": 48},
-    "RTX6000": {"family": "gpu32", "max_gpus": 4, "max_cpus": 32},
+    "V100":    {"family": "gpu",   "max_gpus": 4, "max_cpus": 40, "vram_gb": 16},
+    "A30":     {"family": "gpu",   "max_gpus": 4, "max_cpus": 32, "vram_gb": 24},
+    "A100":    {"family": "gpu",   "max_gpus": 2, "max_cpus": 32, "vram_gb": 80},
+    "L40S":    {"family": "gpu32", "max_gpus": 4, "max_cpus": 48, "vram_gb": 48},
+    "RTX6000": {"family": "gpu32", "max_gpus": 4, "max_cpus": 32, "vram_gb": 96},
 }
 
 # Display order of GPU models within each family (controls dropdown order).
@@ -109,7 +112,9 @@ def family_gpu_options(family):
         return [("No GPU", GPU_NONE)]
     options = [("Any GPU (recommended)", GPU_ANY)]
     for model in _FAMILY_MODEL_ORDER.get(family, []):
-        options.append((f"{model} GPU (specific)", model))
+        vram = GPU_MODELS[model].get("vram_gb")
+        label = f"{model} GPU ({vram} GB)" if vram else f"{model} GPU (specific)"
+        options.append((label, model))
     return options
 
 
