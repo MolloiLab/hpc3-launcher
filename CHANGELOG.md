@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.1.1...v0.2.0) (2026-06-17)
+
+
+### Features
+
+* account-driven cascade so only valid HPC3 configs are selectable ([5dd5201](https://github.com/MolloiLab/hpc3-launcher/commit/5dd520178a6ea3168a38fe65733f2f36aa96c254))
+
+
+### Bug Fixes
+
+* derive CPUs from memory using real per-partition limits ([406d045](https://github.com/MolloiLab/hpc3-launcher/commit/406d045c0244af0e870831c4db6a57441689a96c))
+* keep every VSCode session's SSH config block (multi-session) ([cdd5afa](https://github.com/MolloiLab/hpc3-launcher/commit/cdd5afa33527c531c038cbc1acbd69315c45d289))
+
 ## [0.1.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.1.0...v0.1.1) (2026-06-16)
 
 
