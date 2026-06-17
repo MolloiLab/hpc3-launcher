@@ -3,8 +3,13 @@ name: release-please
 # Conventional-commit driven releases. On every push to main, release-please
 # maintains a "Release PR" that bumps the version (in .release-please-manifest.json
 # and the `# x-release-please-version` line in updater.py) and the CHANGELOG.
-# Merging that PR creates a vX.Y.Z tag + GitHub Release, which fires release.yml
-# to build and attach the installers.
+# Merging that PR creates a vX.Y.Z tag + GitHub Release; this workflow then
+# explicitly dispatches release.yml to build and attach the installers.
+#
+# Why the explicit dispatch: a Release published by the default GITHUB_TOKEN does
+# NOT trigger `release: published` workflows (GitHub's anti-recursion rule), so
+# release.yml would never fire on its own. workflow_dispatch is exempt from that
+# rule, so we kick it off here when a release is actually created.
 
 on:
   push:
@@ -13,13 +18,24 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write   # needed to dispatch the build-release workflow
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - name: Build + attach installers for the new release
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ steps.release.outputs.tag_name }}" \
+            -f tag="${{ steps.release.outputs.tag_name }}"
