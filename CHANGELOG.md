@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.2.0...v0.2.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* document no-admin macOS install (drag to ~/Applications) ([8a7f48c](https://github.com/MolloiLab/hpc3-launcher/commit/8a7f48cbed5167f25411fbd952be8cb0e28cc5bb))
+
 ## [0.2.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.1.1...v0.2.0) (2026-06-17)
 
 
