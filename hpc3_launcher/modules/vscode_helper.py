@@ -7,6 +7,7 @@ import paramiko
 import threading
 import time
 import os
+import subprocess
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, Qt
 from modules.hpc3_constraints import partition_for, account_family
 
@@ -780,11 +781,37 @@ Host {hostname}
                     f.write(new_config)
                 os.chmod(config_file, 0o600)
 
+            # Compute nodes rotate their SSH host key every job but reuse the node
+            # name, so a previous job's key lingers and makes StrictHostKeyChecking
+            # accept-new fail with "HOST IDENTIFICATION CHANGED". Clear the stale
+            # entry now so the fresh key is accepted cleanly -- for this app and any
+            # other tool that shares ~/.ssh/known_hosts.
+            self._clear_stale_host_key(hostname, config.get('port'))
+
             logger.info(f"SSH configuration for job {job_id} added to {config_file}")
-            
+
         except Exception as e:
             logger.error(f"Failed to add SSH configuration to local file: {e}")
             self.error_occurred.emit(f"Failed to add SSH configuration: {str(e)}")
+
+    def _clear_stale_host_key(self, node, port):
+        """Remove any stale ~/.ssh/known_hosts entry for a compute node.
+
+        HPC3 gives each job a fresh host key on a reused node name, so the old key
+        must be dropped or `accept-new` refuses the connection. Best-effort: never
+        raises, since failing to prune a key shouldn't block launching a session.
+        """
+        if not node:
+            return
+        targets = [node]
+        if port and str(port) != "22":
+            targets.insert(0, f"[{node}]:{port}")
+        for target in targets:
+            try:
+                subprocess.run(["ssh-keygen", "-R", target],
+                               capture_output=True, timeout=10, check=False)
+            except Exception as e:
+                logger.warning(f"Could not clear stale host key for {target}: {e}")
 
     def ensure_ssh_config(self, job_id):
         """Parse a running job's connection info and make sure its ~/.ssh/config
