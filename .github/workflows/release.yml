@@ -15,6 +15,17 @@ name: build-release
 #       MACOS_NOTARY_APPLE_ID       Apple ID email
 #       MACOS_NOTARY_TEAM_ID        10-char Team ID
 #       MACOS_NOTARY_PASSWORD       app-specific password (appleid.apple.com)
+#
+# Windows signing is progressive too:
+#   * no secrets  -> unsigned (works; user clicks "More info -> Run anyway" once,
+#                    see README "Installing on Windows").
+#   * Azure Trusted Signing secrets present -> Authenticode-signed exe + installer
+#                    (no SmartScreen warning). Add these repo secrets (see
+#                    docs/SIGNING.md for the ~$10/mo setup):
+#       AZURE_TENANT_ID  AZURE_CLIENT_ID  AZURE_CLIENT_SECRET
+#       TRUSTED_SIGNING_ENDPOINT       e.g. https://wus2.codesigning.azure.net
+#       TRUSTED_SIGNING_ACCOUNT        Trusted Signing account name
+#       TRUSTED_SIGNING_CERT_PROFILE   certificate profile name
 
 on:
   release:
@@ -109,6 +120,11 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    env:
+      # With Azure Trusted Signing secrets set, the exe + installer are
+      # Authenticode-signed (no SmartScreen warning). Without them they ship
+      # unsigned and users click "More info -> Run anyway" once (see README).
+      HAS_WIN_SIGNING: ${{ secrets.TRUSTED_SIGNING_ENDPOINT != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -135,14 +151,41 @@ jobs:
             --hidden-import PyQt5.QtCore --hidden-import PyQt5.QtGui `
             --icon hpc3_launcher/resources/icon.ico `
             hpc3_launcher/main.py
+      - name: Sign app (Azure Trusted Signing if configured)
+        if: env.HAS_WIN_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\HPC3-Launcher
+          files-folder-filter: exe
+          files-folder-recurse: true
       - name: Build installer (Inno Setup)
         run: |
           # Inno Setup turns the PyInstaller one-folder build into a single
           # download-and-run setup.exe (the Windows analog of the macOS .dmg).
+          # The installer is per-user (no admin) -- see windows-installer.iss.
           choco install innosetup --no-progress -y
           $ver = $env:TAG -replace '^v',''
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           & "$iscc" "/DAppVersion=$ver" windows-installer.iss
+      - name: Sign installer (Azure Trusted Signing if configured)
+        if: env.HAS_WIN_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}
+          files-folder-filter: exe
+          files-folder-recurse: false
       - name: Attach installer to release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -268,8 +311,9 @@ jobs:
           if (-not $setup) { throw "installer not found in release assets" }
           Write-Host "Installing $($setup.Name) silently"
           Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
-          # Inno installs to Program Files (64-bit) here; check both to be safe.
-          $exe = Get-ChildItem -Path "$env:ProgramFiles\HPC3 Launcher","${env:ProgramFiles(x86)}\HPC3 Launcher" `
+          # Per-user (PrivilegesRequired=lowest) installs to %LocalAppData%\Programs;
+          # also check Program Files in case a future build switches to a machine install.
+          $exe = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\HPC3 Launcher","$env:ProgramFiles\HPC3 Launcher","${env:ProgramFiles(x86)}\HPC3 Launcher" `
                    -Filter HPC3-Launcher.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { throw "HPC3-Launcher.exe not found after install" }
           $env:HPC3_SMOKE_TEST = "1"

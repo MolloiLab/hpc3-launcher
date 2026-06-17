@@ -55,3 +55,58 @@ So notarization is **not** possible until a Developer ID Application cert is cre
 
 The next release's macOS job will Developer-ID-sign with the hardened runtime,
 notarize via `notarytool`, and staple the ticket. Users then just double-click.
+
+---
+
+# Windows signing (SmartScreen)
+
+Today's Windows `setup.exe` and the app `.exe` are **unsigned**, so the first run
+shows Microsoft Defender **SmartScreen** ("Windows protected your PC"). Users click
+**More info → Run anyway** once — the same idea as the macOS quarantine step, and
+documented in the README. The install itself needs **no admin rights** (it's a
+per-user install), so this works on locked-down lab machines.
+
+To make SmartScreen go away, the exe + installer need an **Authenticode** signature.
+Since June 2023 the CA/Browser Forum requires code-signing private keys to live on
+FIPS-140 hardware (an HSM/USB token or a cloud HSM) — so a plain `.pfx`-on-disk
+certificate no longer works in CI. The simplest, cheapest path today is:
+
+## Azure Trusted Signing (~$10/month)
+
+Microsoft-run cloud signing that plugs straight into the release workflow via
+`azure/trusted-signing-action`. The `build-release` workflow auto-detects the
+secrets below and signs both the app exe and the installer; with no secrets it
+just ships unsigned. Nothing else changes.
+
+> Eligibility: your Azure account must pass a one-time **identity validation**
+> (individual or organization). Organizations younger than 3 years can still use
+> it; the "certificate subject" just shows the validated identity.
+
+### One-time setup
+
+1. **Azure subscription** — https://portal.azure.com (any pay-as-you-go works).
+2. **Create a Trusted Signing account** (search "Trusted Signing" in the portal),
+   pick a region — its endpoint is e.g. `https://wus2.codesigning.azure.net`.
+3. **Complete Identity Validation**, then **create a Certificate Profile**
+   (type: *Public Trust*). Note the **account name** and **profile name**.
+4. **Create an app registration** (Microsoft Entra ID → App registrations → New) and
+   a **client secret**. Note its **Tenant ID**, **Client ID**, **Client secret**.
+5. **Grant it signing rights**: on the Trusted Signing account → Access control
+   (IAM) → add role **"Trusted Signing Certificate Profile Signer"** to that app.
+
+### Add these repo secrets
+
+`Settings → Secrets and variables → Actions → New repository secret`:
+
+| Secret | Value |
+|--------|-------|
+| `AZURE_TENANT_ID` | the app registration's Directory (tenant) ID |
+| `AZURE_CLIENT_ID` | the app registration's Application (client) ID |
+| `AZURE_CLIENT_SECRET` | the client secret value |
+| `TRUSTED_SIGNING_ENDPOINT` | e.g. `https://wus2.codesigning.azure.net` |
+| `TRUSTED_SIGNING_ACCOUNT` | the Trusted Signing account name |
+| `TRUSTED_SIGNING_CERT_PROFILE` | the certificate profile name |
+
+The next release's Windows job signs the exe and installer automatically, and
+SmartScreen stops warning (reputation builds within a few downloads). Until then,
+the unsigned installer is perfectly usable via **More info → Run anyway**.

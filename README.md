@@ -44,6 +44,15 @@ Double-click the app; when macOS blocks it, go to **System Settings → Privacy 
 
 > Once the project has an Apple Developer ID configured (see `docs/SIGNING.md`), releases are notarized automatically and this step goes away — users just double-click.
 
+## Installing on Windows (first launch)
+
+The Windows build installs **per-user and needs no admin rights** — it works on lab machines where you don't have administrator access.
+
+1. Download and double-click `HPC3-Launcher-<version>-windows-setup.exe`. It installs to your user profile (no UAC/admin prompt) and adds a Start Menu shortcut.
+2. The installer (and first app launch) is **not yet code-signed**, so Windows **SmartScreen** may show *"Windows protected your PC."* Click **More info → Run anyway**. This is a one-time thing.
+
+> Once Azure Trusted Signing is configured (see `docs/SIGNING.md`), releases are signed automatically and this warning goes away.
+
 ## Running from source
 
 ```bash

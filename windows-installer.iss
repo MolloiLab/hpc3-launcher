@@ -17,6 +17,10 @@
 AppName=HPC3 Launcher
 AppVersion={#AppVersion}
 AppPublisher=Molloi Lab
+; Per-user install -- NEVER requires admin/UAC. Lab machines without admin rights
+; can install it. {autopf} then resolves to %LocalAppData%\Programs, and the
+; Start Menu / desktop shortcuts go in the user's own profile.
+PrivilegesRequired=lowest
 DefaultDirName={autopf}\HPC3 Launcher
 DefaultGroupName=HPC3 Launcher
 DisableProgramGroupPage=yes
