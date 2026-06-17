@@ -14,6 +14,7 @@ from modules.vscode_helper import VSCodeManager
 from modules.auth import HPC_SERVER, get_all_existing_users
 from modules.balance import BalanceManager
 from modules.node_status import NodeStatusManager
+from modules import hpc3_constraints as hc
 from core.ssh_session import SSHWorker
 from ui.status_view import LiveStatusView
 import os
@@ -36,10 +37,7 @@ class VSCodeWidget(QWidget):
         
         # Account information
         self.accounts = []
-        
-        # GPU type information
-        self.gpu_types = []
-        
+
         # Running VSCode sessions, keyed by job id -> info dict (may carry 'config').
         # Multiple sessions can run at once; the table below lists them all.
         self.sessions = {}
@@ -141,35 +139,19 @@ class VSCodeWidget(QWidget):
         self._init_worker.start()
 
     def _fetch_options(self, rep):
+        # GPU types are no longer discovered over SSH: they're derived locally from
+        # the chosen account's family (see _rebuild_gpu_options). The old sinfo
+        # probe truncated long gres tokens (e.g. "gpu:rtx6000" -> "rtx600") and
+        # couldn't model the account->partition rules anyway.
         rep.state("loading", "reading your accounts")
         balance = self.balance_manager.get_user_balance(reporter=rep)
         accounts = []
         if balance and balance.get('accounts'):
             accounts = [{'name': a['name'], 'is_personal': a['is_personal'],
                          'available': a['available']} for a in balance['accounts']]
-        rep.state("loading", "discovering GPU types")
-        gpu_types = self._discover_gpu_types()
         rep.state("checking", "looking for a running VSCode session")
         running = self.vscode_manager.get_running_vscode_jobs()
-        return {'accounts': accounts, 'gpu_types': gpu_types, 'running': running}
-
-    def _discover_gpu_types(self):
-        """GPU-type list for the combo; falls back to HPC3's known set on failure."""
-        gpu_types = [{"name": "No GPU", "value": None},
-                     {"name": "Any GPU (recommended)", "value": ""}]
-        found = set()
-        try:
-            out = self.node_manager.execute_ssh_command('sinfo -o "%60N %10c %10m  %30f %10G" -e')
-            for line in out.strip().split('\n')[1:]:
-                if "gpu:" in line:
-                    t = line.split("gpu:")[1].split(":")[0]
-                    if t and t not in ("N/A", ""):
-                        found.add(t)
-        except Exception as e:
-            logger.warning(f"GPU discovery failed, using defaults: {e}")
-        for t in (sorted(found) if found else ["V100", "A30", "A100", "L40S"]):
-            gpu_types.append({"name": f"{t} GPU (specific)", "value": t})
-        return gpu_types
+        return {'accounts': accounts, 'running': running}
 
     def _on_init_failed(self, message, hint=""):
         self.status_view.finish_error(message, hint)
@@ -177,10 +159,9 @@ class VSCodeWidget(QWidget):
 
     def _on_options_loaded(self, data):
         self.accounts = data['accounts']
-        self.gpu_types = data['gpu_types']
         self._populate_account_combo()
-        self._populate_gpu_combo()
-        self._apply_account_gpu_constraints()
+        self._rebuild_gpu_options()
+        self._apply_cascade()
         self.status_label.setText("Ready")
         self.status_view.finish_ok("ready")
 
@@ -208,13 +189,6 @@ class VSCodeWidget(QWidget):
             self.account_combo.addItem(label, account['name'])
         self.account_combo.setCurrentIndex(0)
         self.account_combo.blockSignals(False)
-
-    def _populate_gpu_combo(self):
-        self.gpu_combo.blockSignals(True)
-        self.gpu_combo.clear()
-        for g in self.gpu_types:
-            self.gpu_combo.addItem(g["name"], g["value"])
-        self.gpu_combo.blockSignals(False)
 
     # --- multi-session model ---------------------------------------------------
 
@@ -365,86 +339,91 @@ class VSCodeWidget(QWidget):
         config_widget = QWidget()
         config_layout = QVBoxLayout(config_widget)
         
-        # Create resource configuration group
-        resources_group = QGroupBox("Resource Configuration")
-        resources_layout = QGridLayout(resources_group)
-        
-        # Number of CPUs
-        cpu_label = QLabel("Number of CPUs:")
-        self.cpu_spinbox = QSpinBox()
-        self.cpu_spinbox.setMinimum(1)
-        self.cpu_spinbox.setMaximum(128)
-        self.cpu_spinbox.setValue(2)  # Default value changed to 2
-        resources_layout.addWidget(cpu_label, 0, 0)
-        resources_layout.addWidget(self.cpu_spinbox, 0, 1)
-        
-        # Memory size
-        memory_label = QLabel("Memory Size:")
+        # All fields live in ONE top-to-bottom flow, in dependency order: each
+        # choice constrains the ones below it (account -> GPU type -> memory ->
+        # #GPUs -> #CPUs -> run time -> free). The cascade (_apply_cascade) keeps
+        # only valid HPC3 combinations selectable; see modules/hpc3_constraints.py.
+        config_group = QGroupBox("Session Configuration")
+        grid = QGridLayout(config_group)
+        row = 0
+
+        # 1. Account -- the first and most important choice: its suffix sets the
+        #    partition family, which decides every GPU option below it.
+        grid.addWidget(QLabel("Account:"), row, 0)
+        self.account_combo = QComboBox()
+        self.account_combo.addItem("Loading…", None)
+        self.account_combo.currentIndexChanged.connect(self.on_account_changed)
+        grid.addWidget(self.account_combo, row, 1)
+        row += 1
+
+        # 2. GPU Type -- repopulated from the account's family (No GPU / Any / the
+        #    specific models that actually exist in that family).
+        grid.addWidget(QLabel("GPU Type:"), row, 0)
+        self.gpu_combo = QComboBox()
+        self.gpu_combo.addItem("Select an account first", None)
+        self.gpu_combo.setEnabled(False)
+        self.gpu_combo.currentIndexChanged.connect(self.on_gpu_changed)
+        grid.addWidget(self.gpu_combo, row, 1)
+        row += 1
+
+        # 3. Memory Size -- HPC3 caps RAM per core, so a bigger memory raises the
+        #    "Number of CPUs" floor below.
+        grid.addWidget(QLabel("Memory Size:"), row, 0)
         self.memory_combo = QComboBox()
         for mem in ["4G", "8G", "16G", "32G", "64G", "128G"]:
             self.memory_combo.addItem(mem)
-        self.memory_combo.setCurrentText("4G")  # Default value changed to 4G
-        resources_layout.addWidget(memory_label, 1, 0)
-        resources_layout.addWidget(self.memory_combo, 1, 1)
-        
-        # GPU type
-        gpu_label = QLabel("GPU Type:")
-        self.gpu_combo = QComboBox()
-        self.gpu_combo.addItem("Loading…", None)
-        self.gpu_combo.currentIndexChanged.connect(self.on_gpu_changed)
-        resources_layout.addWidget(gpu_label, 2, 0)
-        resources_layout.addWidget(self.gpu_combo, 2, 1)
+        self.memory_combo.setCurrentText("4G")
+        self.memory_combo.currentIndexChanged.connect(self.on_memory_changed)
+        grid.addWidget(self.memory_combo, row, 1)
+        row += 1
 
-        # GPU count
-        gpu_count_label = QLabel("Number of GPUs:")
+        # 4. Number of GPUs -- max clamped to the chosen GPU's per-node limit.
+        grid.addWidget(QLabel("Number of GPUs:"), row, 0)
         self.gpu_count_spinbox = QSpinBox()
         self.gpu_count_spinbox.setMinimum(1)
         self.gpu_count_spinbox.setMaximum(8)
-        self.gpu_count_spinbox.setValue(1)  # Default value
-        self.gpu_count_spinbox.setEnabled(False)  # Disabled by default until GPU is selected
-        resources_layout.addWidget(gpu_count_label, 3, 0)
-        resources_layout.addWidget(self.gpu_count_spinbox, 3, 1)
-        
-        # Add resource configuration group to configuration layout
-        config_layout.addWidget(resources_group)
-        
-        # Create job configuration group
-        job_group = QGroupBox("Job Configuration")
-        job_layout = QGridLayout(job_group)
-        
-        # Account
-        account_label = QLabel("Account:")
-        self.account_combo = QComboBox()
-        self.account_combo.addItem("Loading...", "")
-        self.account_combo.currentIndexChanged.connect(self.on_account_changed)
-        job_layout.addWidget(account_label, 0, 0)
-        job_layout.addWidget(self.account_combo, 0, 1)
-        
-        # Job time limit
-        time_label = QLabel("Run Time:")
+        self.gpu_count_spinbox.setValue(1)
+        self.gpu_count_spinbox.setEnabled(False)  # until a GPU is selected
+        grid.addWidget(self.gpu_count_spinbox, row, 1)
+        row += 1
+
+        # 5. Number of CPUs -- min from memory (GB-per-core cap), max from the node type.
+        grid.addWidget(QLabel("Number of CPUs:"), row, 0)
+        self.cpu_spinbox = QSpinBox()
+        self.cpu_spinbox.setMinimum(1)
+        self.cpu_spinbox.setMaximum(128)
+        self.cpu_spinbox.setValue(2)
+        grid.addWidget(self.cpu_spinbox, row, 1)
+        row += 1
+
+        # 6. Run Time -- capped at 3 days on free queues, 14 days on paid.
+        grid.addWidget(QLabel("Run Time:"), row, 0)
         self.time_combo = QComboBox()
-        for time_limit in ["1:00:00", "2:00:00", "4:00:00", "8:00:00", "12:00:00", "24:00:00", "48:00:00"]:
-            self.time_combo.addItem(time_limit)
-        self.time_combo.setCurrentText("2:00:00")  # 2h default -- long enough to work, short enough not to silently drain SUs
-        job_layout.addWidget(time_label, 1, 0)
-        job_layout.addWidget(self.time_combo, 1, 1)
-        
-        # Free option -- default to Yes ("free" queues don't spend your SU balance).
-        free_option_label = QLabel("Use Free Resources:")
+        for t in ["1:00:00", "2:00:00", "4:00:00", "8:00:00", "12:00:00",
+                  "1-00:00:00", "2-00:00:00", "3-00:00:00", "7-00:00:00", "14-00:00:00"]:
+            self.time_combo.addItem(t)
+        self.time_combo.setCurrentText("2:00:00")  # 2h default -- enough to work, won't silently drain SUs
+        grid.addWidget(self.time_combo, row, 1)
+        row += 1
+
+        # 7. Use Free Resources -- free queues don't spend SUs (default Yes); this
+        #    flips the partition to its free mirror and shortens the run-time cap.
+        grid.addWidget(QLabel("Use Free Resources:"), row, 0)
         self.free_option_check = QComboBox()
         self.free_option_check.addItem("Yes — don't spend SUs (recommended)", True)
         self.free_option_check.addItem("No — use your allocation", False)
         self.free_option_check.setCurrentIndex(0)  # Free by default
-        free_option_hint = QLabel("Free queues don't draw down your SU balance, but may wait longer. "
-                                  "You still pick an account (it sets your partition).")
+        self.free_option_check.currentIndexChanged.connect(self.on_free_changed)
+        grid.addWidget(self.free_option_check, row, 1)
+        row += 1
+
+        free_option_hint = QLabel("Free queues don't draw down your SU balance, but may wait longer "
+                                  "and can be requeued. You still pick an account (it sets your partition).")
         free_option_hint.setStyleSheet("color: #888; font-size: 10px;")
         free_option_hint.setWordWrap(True)
-        job_layout.addWidget(free_option_label, 2, 0)
-        job_layout.addWidget(self.free_option_check, 2, 1)
-        job_layout.addWidget(free_option_hint, 3, 0, 1, 2)
-        
-        # Add job configuration group to configuration layout
-        config_layout.addWidget(job_group)
+        grid.addWidget(free_option_hint, row, 0, 1, 2)
+
+        config_layout.addWidget(config_group)
         
         # Create control buttons
         button_layout = QHBoxLayout()
@@ -534,19 +513,55 @@ class VSCodeWidget(QWidget):
         outer_layout.addWidget(self.status_view)
     
     def on_account_changed(self, index):
-        """Re-apply the account<->GPU rules whenever the account changes."""
-        self._apply_account_gpu_constraints()
+        """Account is the top of the cascade: rebuild the GPU options for its
+        family, then re-derive every downstream limit."""
+        if self._applying:
+            return
+        self._rebuild_gpu_options()
+        self._apply_cascade()
 
-    def _apply_account_gpu_constraints(self):
-        """Make only valid account+GPU combinations selectable.
+    def on_gpu_changed(self, index):
+        if self._applying:
+            return
+        self._apply_cascade()
 
-        HPC3 rule: a GPU job needs an account whose name contains "gpu", and a
-        non-GPU account can only run CPU jobs. So rather than letting the user pick
-        a nonsense combo and erroring at submit time, we:
-          * enable only the GPU options that match the chosen account,
-          * snap the current selection to a valid one,
-          * enable "Number of GPUs" only when a GPU is actually selected,
-          * enable Submit only once the whole combination is valid.
+    def on_memory_changed(self, index):
+        if self._applying:
+            return
+        self._apply_cascade()
+
+    def on_free_changed(self, index):
+        if self._applying:
+            return
+        self._apply_cascade()
+
+    def _rebuild_gpu_options(self):
+        """Repopulate the GPU-type dropdown from the selected account's family.
+
+        A `…_GPU32` account offers L40S/RTX6000, a `…_GPU` account offers
+        V100/A30/A100, a CPU account offers only "No GPU" -- so an incompatible
+        GPU type can never be selected in the first place. Built locally from the
+        curated model; no SSH round-trip.
+        """
+        account = self.account_combo.currentData()
+        self.gpu_combo.blockSignals(True)
+        self.gpu_combo.clear()
+        if account is None:
+            self.gpu_combo.addItem("Select an account first", None)
+            self.gpu_combo.setEnabled(False)
+        else:
+            for label, value in hc.family_gpu_options(hc.account_family(account)):
+                self.gpu_combo.addItem(label, value)
+            self.gpu_combo.setEnabled(True)
+            self.gpu_combo.setCurrentIndex(0)  # Any GPU (GPU accts) or No GPU (CPU accts)
+        self.gpu_combo.blockSignals(False)
+
+    def _apply_cascade(self):
+        """Re-derive every downstream limit from the current selections.
+
+        Runs top-to-bottom (account -> GPU type -> memory -> #GPUs -> #CPUs ->
+        run time -> free); each field's range/enabled-state is recomputed so the
+        form can only ever describe a configuration HPC3 will accept.
         """
         if self._applying:
             return
@@ -554,43 +569,59 @@ class VSCodeWidget(QWidget):
         try:
             account = self.account_combo.currentData()
             valid_account = account is not None
-            is_gpu_account = bool(valid_account and "gpu" in account.lower())
+            family = hc.account_family(account) if valid_account else None
+            gpu_type = self.gpu_combo.currentData() if valid_account else None
+            use_free = bool(self.free_option_check.currentData())
 
-            model = self.gpu_combo.model()
-            for i in range(self.gpu_combo.count()):
-                value = self.gpu_combo.itemData(i)
-                # "No GPU" (None) is valid only for non-GPU accounts; the GPU options
-                # ("" = any, or a specific type) are valid only for GPU accounts.
-                ok = (value is None and not is_gpu_account) or (value is not None and is_gpu_account)
+            # Number of GPUs: on only when a GPU is requested; max = per-node limit.
+            if valid_account and gpu_type is not None:
+                self.gpu_count_spinbox.setEnabled(True)
+                self.gpu_count_spinbox.setMaximum(max(1, hc.max_gpus_for(gpu_type, family)))
+            else:
+                self.gpu_count_spinbox.setEnabled(False)
+
+            # CPUs: floor from memory (GB-per-core cap), ceiling from the node type.
+            if valid_account:
+                mem_gb = hc.parse_mem_gb(self.memory_combo.currentText())
+                cpu_max = hc.max_cpus_for(gpu_type, family)
+                cpu_min = min(hc.min_cpus_for_mem(mem_gb, family), cpu_max)
+                self.cpu_spinbox.setEnabled(True)
+                self.cpu_spinbox.setMaximum(cpu_max)   # set max before min so the
+                self.cpu_spinbox.setMinimum(cpu_min)   # range is never transiently inverted
+            else:
+                self.cpu_spinbox.setEnabled(False)
+
+            # Run time: disable options beyond the tier cap (free 3d / paid 14d),
+            # and snap the selection down if it now exceeds the cap.
+            cap = hc.runtime_cap_hours(use_free)
+            model = self.time_combo.model()
+            best = None
+            for i in range(self.time_combo.count()):
+                ok = hc.parse_runtime_hours(self.time_combo.itemText(i)) <= cap + 1e-6
                 item = model.item(i) if model is not None else None
                 if item is not None:
-                    item.setEnabled(valid_account and ok)
+                    item.setEnabled(ok)
+                if ok:
+                    best = i  # largest still-enabled option (the list ascends)
+            if best is not None and hc.parse_runtime_hours(self.time_combo.currentText()) > cap + 1e-6:
+                self.time_combo.setCurrentIndex(best)
 
-            # Snap the selection to a valid option for this account.
-            if valid_account:
-                cur = self.gpu_combo.currentData()
-                cur_ok = (cur is None and not is_gpu_account) or (cur is not None and is_gpu_account)
-                if not cur_ok:
-                    target = "" if is_gpu_account else None  # Any GPU, or No GPU
-                    for i in range(self.gpu_combo.count()):
-                        if self.gpu_combo.itemData(i) == target:
-                            self.gpu_combo.setCurrentIndex(i)
-                            break
-
-            gpu_value = self.gpu_combo.currentData() if valid_account else None
-            self.gpu_combo.setEnabled(valid_account)
-            self.gpu_count_spinbox.setEnabled(valid_account and gpu_value is not None)
             self.submit_btn.setEnabled(valid_account)
 
+            # Status line: a one-glance summary of what will actually be requested.
             if not valid_account:
                 self.status_label.setText("Select an account to enable submission")
-            elif is_gpu_account:
-                self.status_label.setText("GPU account — a GPU will be requested")
             else:
-                self.status_label.setText("CPU account — GPU options are disabled")
+                part = hc.partition_for(account, gpu_type, use_free)
+                if gpu_type is None:
+                    self.status_label.setText(f"CPU job → partition '{part}'")
+                elif gpu_type == hc.GPU_ANY:
+                    self.status_label.setText(f"Any GPU → partition '{part}'")
+                else:
+                    self.status_label.setText(f"{gpu_type} → partition '{part}'")
         finally:
             self._applying = False
-    
+
 
     @pyqtSlot()
     def submit_job(self):
@@ -612,13 +643,14 @@ class VSCodeWidget(QWidget):
             self.show_error("Please select an account")
             return
 
-        is_gpu_account = account and "gpu" in account.lower()
-        is_requesting_gpu = gpu_type is not None  # None means no GPU
-        if is_requesting_gpu and not is_gpu_account:
-            self.show_error("Using GPU resources requires an account with GPU keyword")
+        # The cascade keeps the form valid; this re-checks the account<->GPU pairing
+        # as a backstop before the request reaches SLURM.
+        family = hc.account_family(account)
+        if hc.is_gpu_family(family) and gpu_type is None:
+            self.show_error("This GPU account needs a GPU selected (pick 'Any GPU' or a model)")
             return
-        if is_gpu_account and not is_requesting_gpu:
-            self.show_error("Using GPU account requires selecting GPU resources")
+        if not hc.is_gpu_family(family) and gpu_type is not None:
+            self.show_error("This is a CPU account — GPU resources aren't available on it")
             return
 
         self._pending_submit = dict(
@@ -702,10 +734,3 @@ class VSCodeWidget(QWidget):
         """Handler function when SSH configuration is removed from local file"""
         logger.info(f"SSH configuration removed - Job: {job_id}")
         self.status_label.setText(f"VSCode connection configuration removed")
-
-    @pyqtSlot(int)
-    def on_gpu_changed(self, index):
-        """Only valid options are selectable, so just track the GPU-count enable."""
-        if self._applying:
-            return
-        self.gpu_count_spinbox.setEnabled(self.gpu_combo.currentData() is not None)

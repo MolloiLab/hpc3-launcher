@@ -8,6 +8,7 @@ import threading
 import time
 import os
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, Qt
+from modules.hpc3_constraints import partition_for, account_family
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -208,45 +209,25 @@ class VSCodeManager(QObject):
             cmd += f" --time={time_limit}"
             cmd += f" --account={account}"
             
-            # If the account name contains "gpu" but no GPU was requested, default
-            # to "any GPU" so a GPU account isn't accidentally used CPU-only.
-            account_contains_gpu = account and "gpu" in account.lower()
+            # A GPU account (suffix `gpu`/`gpu32`) but no GPU type chosen -> request
+            # "any GPU" so the GPU account isn't accidentally used CPU-only.
+            account_contains_gpu = account_family(account) in ("gpu", "gpu32")
+            if gpu_type is None and account_contains_gpu:
+                gpu_type = ""  # "" sentinel -> any GPU of the account's family
 
-            # Handle GPU options
-            if gpu_type is not None or account_contains_gpu:  # GPU requested, or a GPU account
-                # GPU account but no type chosen -> any GPU ("" sentinel)
-                if gpu_type is None and account_contains_gpu:
-                    gpu_type = ""
+            # Partition is derived from the curated HPC3 model (hpc3_constraints):
+            # a specific GPU model pins the family (so RTX6000 -> gpu32, not gpu),
+            # otherwise the account suffix decides; `use_free` then picks the free
+            # vs paid partition within that family. This replaces the old hardcoded
+            # "L40S -> gpu32, everything else -> gpu" rule that mis-routed RTX6000
+            # and failed with "Requested node configuration is not available".
+            cmd += f" -p {partition_for(account, gpu_type, use_free)}"
 
-                # Determine the correct partition based on GPU type
-                # L40S GPUs are in gpu32/free-gpu32 partition
-                # V100, A30, A100 are in gpu/free-gpu partition
-                gpu32_types = ["L40S"]  # GPU types that require gpu32 partition
-
-                if gpu_type in gpu32_types:
-                    # L40S requires gpu32 partition
-                    if use_free:
-                        cmd += f" -p free-gpu32"
-                    else:
-                        cmd += f" -p gpu32"
-                else:
-                    # V100, A30, A100, and generic GPU use standard gpu partition
-                    if use_free:
-                        cmd += f" -p free-gpu"
-                    else:
-                        cmd += f" -p gpu"
-
-                if gpu_type == "":  # "" sentinel -> any GPU
-                    # No specific type: let Slurm allocate any available GPU.
-                    cmd += f" --gres=gpu:{gpu_count}"
-                else:  # specific GPU type
-                    # Normalize GPU type name for Slurm compatibility
-                    # Note: Different clusters may use different case conventions
-                    # HPC3 typically uses uppercase (V100, A30, A100, L40S)
-                    normalized_gpu_type = gpu_type
-
-                    # Correct format: gpu:<type>:<count>
-                    cmd += f" --gres=gpu:{normalized_gpu_type}:{gpu_count}"
+            # GPU resource request (only when a GPU was actually requested).
+            if gpu_type == "":      # any GPU of the family
+                cmd += f" --gres=gpu:{gpu_count}"
+            elif gpu_type is not None:  # specific model, e.g. gpu:RTX6000:1
+                cmd += f" --gres=gpu:{gpu_type}:{gpu_count}"
             
             # Add VSCode script path
             cmd += " /opt/rcic/scripts/vscode-sshd.sh"
@@ -267,15 +248,22 @@ class VSCodeManager(QObject):
                 error_msg = f"Job submission failed, unable to get job ID"
                 if output and "error" in output.lower():
                     error_msg += f"\nSlurm error: {output}"
-                    # Add helpful hints for common L40S GPU issues
-                    if gpu_type == "L40S":
+                    # Hints for the common GPU account/partition mismatches. The
+                    # cascading UI should prevent these, but surface guidance if
+                    # SLURM still rejects the request.
+                    if gpu_type:  # a specific GPU model was requested
+                        fam = "gpu32" if account_family(account) == "gpu32" else "gpu"
                         if "not available" in output.lower():
-                            error_msg += f"\n\nNote: L40S GPUs are in the gpu32 partition. The partition should be automatically set."
+                            error_msg += (f"\n\nNote: {gpu_type} GPUs live in the {fam} partition. "
+                                          f"Make sure the GPU type matches your account "
+                                          f"(a '…_GPU32' account for L40S/RTX6000, a '…_GPU' account "
+                                          f"for V100/A30/A100), and that the count/CPUs/memory fit one node.")
                         if "invalid account" in output.lower() or "account/partition" in output.lower():
-                            error_msg += f"\n\nAccount Issue: L40S GPUs require a GPU32 account or use of free resources."
-                            error_msg += f"\n• Try enabling 'Use Free Resources' to use the free-gpu32 partition"
-                            error_msg += f"\n• Or contact your faculty advisor to request a GPU32 account"
-                            error_msg += f"\n• Or select 'Any GPU (recommended)' to use any available GPU type"
+                            error_msg += (f"\n\nAccount issue: the {fam} partition needs a matching "
+                                          f"'…_{fam.upper()}' account.")
+                            error_msg += f"\n• Try enabling 'Use Free Resources' (free-{fam} partition)"
+                            error_msg += f"\n• Or ask your faculty advisor to request a {fam.upper()} account"
+                            error_msg += f"\n• Or select 'Any GPU (recommended)'"
                 else:
                     error_msg += f"\nOutput: {output}"
                 raise Exception(error_msg)

@@ -13,6 +13,10 @@ import os
 import time
 from modules.slurm import SlurmManager
 from modules.auth import HPC_SERVER, get_all_existing_users
+from modules.hpc3_constraints import (account_family, is_gpu_family, family_gpu_options,
+                                      max_gpus_for, max_cpus_for, min_cpus_for_mem,
+                                      partition_for, runtime_cap_hours,
+                                      parse_mem_gb, parse_runtime_hours)
 from core.ssh_session import SSHWorker
 from ui.status_view import LiveStatusView
 
@@ -24,182 +28,119 @@ class JobSubmissionDialog(QDialog):
         self.setWindowTitle("Submit New Job")
         self.resize(700, 500)
 
-        # Partition list
+        # Partition list (used for CPU jobs; GPU jobs derive their partition).
         self.partitions = partitions or []
-
         # Account list
         self.accounts = accounts or []
-
         # Username
         self.username = username
 
-        # GPU type list
-        self.gpu_types = []
-        self.node_manager = None
+        # Guard against reentrant combo signals while the cascade updates fields.
+        self._applying = False
 
         # Initialize UI
         self.initUI()
 
-        if gpu_types is not None:
-            # GPU types were fetched in the background before opening this dialog,
-            # so the dialog opens instantly instead of blocking on SSH in __init__.
-            self.gpu_types = gpu_types
-            self.update_gpu_combobox()
-        elif username:
-            # Fallback (e.g. opened directly): fetch synchronously.
-            self.init_node_manager(username)
-            if self.node_manager:
-                self.fetch_gpu_types()
-    
-    def init_node_manager(self, username):
-        """Initialize node status manager"""
-        # Get SSH key path
-        users = get_all_existing_users()
-        key_path = None
-        
-        for user in users:
-            if user['username'] == username:
-                key_path = user['key_path']
-                break
-        
-        if not key_path:
-            logging.warning(f"SSH key for user {username} not found")
-            return
-        
-        # Initialize node manager
-        try:
-            from modules.node_status import NodeStatusManager
-            self.node_manager = NodeStatusManager(
-                hostname=HPC_SERVER,
-                username=username,
-                key_path=key_path
-            )
-        except Exception as e:
-            logging.error(f"Failed to initialize node manager: {e}")
-    
-    def fetch_gpu_types(self):
-        """Get available GPU types"""
-        try:
-            # Add default option (no GPU) and generic GPU option
-            self.gpu_types = [
-                {"name": "No GPU", "value": None},
-                {"name": "Any GPU (recommended)", "value": ""}
-            ]
-            
-            # Get GPU types from node manager
-            if self.node_manager and self.node_manager.connect_ssh():
-                try:
-                    # Use sinfo command to get GPU types
-                    gpu_cmd = 'sinfo -o "%60N %10c %10m  %30f %10G" -e'
-                    output = self.node_manager.execute_ssh_command(gpu_cmd)
-                    
-                    # Parse output to get GPU types
-                    gpu_types_set = set()
-                    lines = output.strip().split('\n')
-                    
-                    # Look for GPU types in output
-                    if len(lines) > 1:
-                        for line in lines[1:]:
-                            if "gpu:" in line:
-                                parts = line.split("gpu:")[1].split(":")
-                                if len(parts) > 0 and parts[0] and parts[0] not in ["N/A", ""]:
-                                    gpu_types_set.add(parts[0])
-                    
-                    # Add found GPU types
-                    for gpu_type in sorted(gpu_types_set):
-                        self.gpu_types.append({
-                            "name": f"{gpu_type} GPU (specific)",
-                            "value": gpu_type
-                        })
-                except Exception as e:
-                    logging.error(f"Failed to get GPU types: {e}")
-                    # Add fallback options
-                    self.gpu_types.extend([
-                        {"name": "V100 GPU (specific)", "value": "V100"},
-                        {"name": "A30 GPU (specific)", "value": "A30"},
-                        {"name": "A100 GPU (specific)", "value": "A100"},
-                        {"name": "L40S GPU (specific)", "value": "L40S"}
-                    ])
-            else:
-                # Add fallback options
-                self.gpu_types.extend([
-                    {"name": "V100 GPU (specific)", "value": "V100"},
-                    {"name": "A30 GPU (specific)", "value": "A30"},
-                    {"name": "A100 GPU (specific)", "value": "A100"},
-                    {"name": "L40S GPU (specific)", "value": "L40S"}
-                ])
-            
-            # Update GPU combobox
-            self.update_gpu_combobox()
-        except Exception as e:
-            logging.error(f"Failed to fetch GPU types: {e}")
-    
-    def update_gpu_combobox(self):
-        """Update GPU type combo box"""
-        if hasattr(self, 'gpu_combo'):
-            self.gpu_combo.clear()
-            
-            for gpu_type in self.gpu_types:
-                self.gpu_combo.addItem(gpu_type["name"], gpu_type["value"])
-    
+        # Build GPU options + constraints from the (default) account selection.
+        # gpu_types is accepted for back-compat but ignored: GPU options are now
+        # derived locally from the account's family (see modules/hpc3_constraints).
+        self._rebuild_gpu_options()
+        self._apply_cascade()
+
+    def _rebuild_gpu_options(self):
+        """Populate the GPU-type dropdown from the selected account's family.
+
+        Family-filtered (a `…_GPU32` account offers L40S/RTX6000, `…_GPU` offers
+        V100/A30/A100, CPU accounts offer only "No GPU"), so an incompatible type
+        can't be picked. Built from the curated model -- no SSH and no truncated
+        `sinfo` tokens like the bogus "RTX600".
+        """
+        account = self.account_combo.currentData()
+        self.gpu_combo.blockSignals(True)
+        self.gpu_combo.clear()
+        if account is None:
+            self.gpu_combo.addItem("Select an account first", None)
+            self.gpu_combo.setEnabled(False)
+        else:
+            for label, value in family_gpu_options(account_family(account)):
+                self.gpu_combo.addItem(label, value)
+            self.gpu_combo.setEnabled(True)
+            self.gpu_combo.setCurrentIndex(0)
+        self.gpu_combo.blockSignals(False)
+
     def on_account_changed(self, index):
-        """Triggered when account selection changes"""
-        # Check if a valid account is selected
-        if index > 0 and self.account_combo.currentData():
-            account = self.account_combo.currentData()
-            
-            # Check if account name contains GPU keyword
-            is_gpu_account = account and "gpu" in account.lower()
-            
-            # If it's a GPU account
-            if is_gpu_account:
-                # Find "Any GPU" option index
-                any_gpu_index = -1
-                for i in range(self.gpu_combo.count()):
-                    if self.gpu_combo.itemData(i) == "":  # Empty string means any GPU
-                        any_gpu_index = i
-                        break
-                
-                # If found, select it as recommended option
-                if any_gpu_index >= 0:
-                    self.gpu_combo.setCurrentIndex(any_gpu_index)
-                
-                # Set status message with recommendation
-                self.statusLabel.setText("GPU account detected - GPU resources recommended")
-            else:
-                # Non-GPU account
-                # Default to "No GPU" option
-                no_gpu_index = -1
-                for i in range(self.gpu_combo.count()):
-                    if self.gpu_combo.itemData(i) is None:  # None means no GPU
-                        no_gpu_index = i
-                        break
-                
-                # If found, select it
-                if no_gpu_index >= 0:
-                    self.gpu_combo.setCurrentIndex(no_gpu_index)
-                
-                # Clear status message
-                self.statusLabel.setText("Ready")
-    
+        if self._applying:
+            return
+        self._rebuild_gpu_options()
+        self._apply_cascade()
+
     def on_gpu_changed(self, index):
-        """Triggered when GPU selection changes"""
-        if index >= 0:
-            gpu_type = self.gpu_combo.currentData()
-            
-            # Check if account name contains GPU keyword
-            is_gpu_account = self.account_combo.currentData() and "gpu" in self.account_combo.currentData().lower()
-            is_requesting_gpu = gpu_type is not None  # None means no GPU
-            
-            # If it's a GPU account but not selecting GPU, show warning
-            if is_gpu_account and not is_requesting_gpu:
-                self.statusLabel.setText("Warning: GPU account should use GPU resources")
-            # If selecting GPU but not a GPU account
-            elif is_requesting_gpu and not is_gpu_account:
-                self.statusLabel.setText("Warning: GPU resources require GPU account")
+        if self._applying:
+            return
+        self._apply_cascade()
+
+    def on_free_changed(self, state):
+        if self._applying:
+            return
+        self._apply_cascade()
+
+    def _on_field_changed(self, *args):
+        """Keep the script header in sync when a resource field changes."""
+        if self._applying:
+            return
+        self.update_script_template()
+
+    def _set_partition(self, name):
+        """Select a partition by name in the combo, inserting it if absent."""
+        for i in range(self.partition.count()):
+            data = self.partition.itemData(i)
+            text = data['name'] if isinstance(data, dict) else self.partition.itemText(i)
+            if text == name:
+                self.partition.setCurrentIndex(i)
+                return
+        self.partition.addItem(name, {'name': name})
+        self.partition.setCurrentIndex(self.partition.count() - 1)
+
+    def _apply_cascade(self):
+        """Re-derive GPU count, partition and status from the current choices."""
+        if self._applying:
+            return
+        self._applying = True
+        try:
+            account = self.account_combo.currentData()
+            valid_account = account is not None
+            family = account_family(account) if valid_account else None
+            gpu_type = self.gpu_combo.currentData() if valid_account else None
+            use_free = self.free_check.isChecked()
+
+            # Number of GPUs: on only when a GPU is requested; max = per-node limit.
+            if valid_account and gpu_type is not None:
+                self.gpu_count.setEnabled(True)
+                self.gpu_count.setMaximum(max(1, max_gpus_for(gpu_type, family)))
             else:
-                self.statusLabel.setText("Ready")
-    
+                self.gpu_count.setEnabled(False)
+
+            # Partition: for GPU jobs it's derived from account+type+free and locked
+            # (this is the RTX6000 -> gpu32 fix); for CPU jobs the user keeps
+            # choosing from the live partition list.
+            if valid_account and gpu_type is not None:
+                self._set_partition(partition_for(account, gpu_type, use_free))
+                self.partition.setEnabled(False)
+            else:
+                self.partition.setEnabled(True)
+
+            if not valid_account:
+                self.statusLabel.setText("Select an account")
+            elif gpu_type is None:
+                self.statusLabel.setText("CPU job — choose any partition")
+            else:
+                self.statusLabel.setText(
+                    f"{gpu_type or 'Any GPU'} → partition '{partition_for(account, gpu_type, use_free)}'")
+
+            self.update_script_template()
+        finally:
+            self._applying = False
+
     def initUI(self):
         """Initialize UI components"""
         layout = QVBoxLayout(self)
@@ -207,84 +148,99 @@ class JobSubmissionDialog(QDialog):
         # Job configuration tabs
         tab_widget = QTabWidget()
         
-        # Combined settings tab
+        # Combined settings tab. Fields are ordered as a cascade: Account first,
+        # then GPU type (filtered to the account's family), then the GPU count /
+        # free-queue toggle / partition that those choices derive.
         settings_tab = QWidget()
         settings_layout = QFormLayout(settings_tab)
-        
+
         # Job name
         self.job_name = QLineEdit()
         self.job_name.setText("my_job")
         settings_layout.addRow("Job Name:", self.job_name)
-        
-        # Partition selection
-        self.partition = QComboBox()
-        if self.partitions:
-            for p in self.partitions:
-                self.partition.addItem(p['name'], p)
-        else:
-            self.partition.addItem("default")
-        settings_layout.addRow("Partition:", self.partition)
-        
-        # Account selection
+
+        # Account -- the top of the cascade. Populate, THEN connect, so filling it
+        # doesn't fire the handler before the rest of the form exists.
         self.account_combo = QComboBox()
-        # Add empty option
         self.account_combo.addItem("Please select an account", None)
-        # Add account options
         if self.accounts:
             for account in self.accounts:
                 account_text = f"{account['name']} (Available: {account['available']})"
                 if account.get('is_personal', False):
                     account_text += " (Personal)"
                 self.account_combo.addItem(account_text, account['name'])
-        # Connect account change signal
         self.account_combo.currentIndexChanged.connect(self.on_account_changed)
         settings_layout.addRow("Account:", self.account_combo)
-        
+
+        # GPU type -- repopulated from the account's family.
+        self.gpu_combo = QComboBox()
+        self.gpu_combo.addItem("Select an account first", None)
+        self.gpu_combo.currentIndexChanged.connect(self.on_gpu_changed)
+        settings_layout.addRow("GPU Type:", self.gpu_combo)
+
+        # Number of GPUs -- max clamped to the chosen GPU's per-node limit.
+        self.gpu_count = QSpinBox()
+        self.gpu_count.setMinimum(1)
+        self.gpu_count.setMaximum(8)
+        self.gpu_count.setValue(1)
+        self.gpu_count.setEnabled(False)  # until a GPU is selected
+        settings_layout.addRow("Number of GPUs:", self.gpu_count)
+
+        # Use free resources -- free queues don't spend SUs (default on). Set,
+        # THEN connect, so the initial check doesn't fire the cascade early.
+        self.free_check = QCheckBox("Use free queue (no SUs; may wait / be requeued)")
+        self.free_check.setChecked(True)
+        self.free_check.stateChanged.connect(self.on_free_changed)
+        settings_layout.addRow("Free Resources:", self.free_check)
+
+        # Partition -- auto-derived & locked for GPU jobs; user-chosen for CPU jobs.
+        self.partition = QComboBox()
+        if self.partitions:
+            for p in self.partitions:
+                self.partition.addItem(p['name'], p)
+        else:
+            self.partition.addItem("standard", {'name': 'standard'})
+        settings_layout.addRow("Partition:", self.partition)
+
         # Number of nodes
         self.nodes = QSpinBox()
         self.nodes.setMinimum(1)
         self.nodes.setMaximum(100)
         self.nodes.setValue(1)
         settings_layout.addRow("Nodes:", self.nodes)
-        
+
         # Number of CPU cores
         self.cpus = QSpinBox()
         self.cpus.setMinimum(1)
         self.cpus.setMaximum(128)
         self.cpus.setValue(1)
         settings_layout.addRow("CPU Cores:", self.cpus)
-        
+
         # Memory requirement
         self.memory = QLineEdit()
         self.memory.setText("1G")
         settings_layout.addRow("Memory Requirement:", self.memory)
-        
-        # GPU type selection
-        self.gpu_combo = QComboBox()
-        self.gpu_combo.addItem("Loading GPU types...", None)
-        self.gpu_combo.currentIndexChanged.connect(self.on_gpu_changed)
-        settings_layout.addRow("GPU Type:", self.gpu_combo)
-        
+
         # Add a separator
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         settings_layout.addRow(separator)
-        
+
         # Runtime limit
         self.time_limit = QLineEdit()
         self.time_limit.setText("1:00:00")  # 1 hour
         settings_layout.addRow("Time Limit:", self.time_limit)
-        
+
         # Output file
         self.output_file = QLineEdit()
         self.output_file.setText("slurm-%j.out")
         settings_layout.addRow("Output File:", self.output_file)
-        
+
         # Email notification - moved from advanced tab
         self.email = QLineEdit()
         settings_layout.addRow("Email Address:", self.email)
-        
+
         # Notification type - moved from advanced tab
         self.email_type = QComboBox()
         self.email_type.addItems(["NONE", "BEGIN", "END", "FAIL", "ALL"])
@@ -372,7 +328,16 @@ echo "Job complete"
         
         # Initial update of script template
         self.update_script_template()
-    
+
+        # Keep the script header in sync as fields change. Connected here, after
+        # the editor exists, so setting the initial values above can't fire them.
+        for w in (self.job_name, self.memory, self.time_limit, self.output_file, self.email):
+            w.textChanged.connect(self._on_field_changed)
+        for w in (self.gpu_count, self.nodes, self.cpus):
+            w.valueChanged.connect(self._on_field_changed)
+        self.partition.currentIndexChanged.connect(self._on_field_changed)
+        self.email_type.currentTextChanged.connect(self._on_field_changed)
+
     def update_script_template(self):
         """Update script template based on settings"""
         # Get setting values
@@ -385,14 +350,9 @@ echo "Job complete"
         output_file = self.output_file.text()
         account = self.account_combo.currentData()
         gpu_type = self.gpu_combo.currentData()
-
-        # Auto-adjust partition for L40S GPUs
-        # L40S GPUs are only available in gpu32/free-gpu32 partitions
-        if gpu_type == "L40S":
-            if "free" in partition.lower():
-                partition = "free-gpu32"
-            elif partition.lower() in ["gpu", "gpu32"]:
-                partition = "gpu32"
+        # The partition is already derived from account+GPU+free by _apply_cascade
+        # (so RTX6000 lands in gpu32, L40S in gpu32, V100/A30/A100 in gpu, etc.) --
+        # no per-type fix-ups needed here.
 
         # Email settings
         email_settings = ""
@@ -402,10 +362,11 @@ echo "Job complete"
         # GPU settings
         gpu_settings = ""
         if gpu_type is not None:  # None means no GPU
+            count = self.gpu_count.value()
             if gpu_type == "":  # Empty string means any GPU
-                gpu_settings = f"#SBATCH --gres=gpu:1"
+                gpu_settings = f"#SBATCH --gres=gpu:{count}"
             else:  # Specific GPU type
-                gpu_settings = f"#SBATCH --gres=gpu:{gpu_type}:1"
+                gpu_settings = f"#SBATCH --gres=gpu:{gpu_type}:{count}"
         
         # Account settings
         account_settings = ""
@@ -461,31 +422,56 @@ echo "Job complete"
         return self.script_editor.toPlainText()
     
     def accept(self):
-        """Validate before accepting dialog"""
-        # Validate if account is selected
-        if self.account_combo.currentData() is None:
+        """Validate the configuration before accepting the dialog."""
+        account = self.account_combo.currentData()
+        if account is None:
             QMessageBox.warning(self, "Validation Failed", "Please select an account")
             return
-            
-        # Get GPU and account information for validation
+
         gpu_type = self.gpu_combo.currentData()
-        account = self.account_combo.currentData()
-        
-        # Validate GPU and account constraints
-        is_gpu_account = account and "gpu" in account.lower()
-        is_requesting_gpu = gpu_type is not None  # None means no GPU
-        
-        # Using GPU but not a GPU account
-        if is_requesting_gpu and not is_gpu_account:
-            QMessageBox.warning(self, "Validation Failed", "Using GPU resources requires an account with GPU keyword")
+        family = account_family(account)
+
+        # Account <-> GPU family must agree.
+        if is_gpu_family(family) and gpu_type is None:
+            QMessageBox.warning(self, "Validation Failed",
+                                "This GPU account needs a GPU selected (pick 'Any GPU' or a model).")
             return
-        
-        # Using GPU account but not selecting GPU
-        if is_gpu_account and not is_requesting_gpu:
-            QMessageBox.warning(self, "Validation Failed", "Using GPU account requires selecting GPU resources")
+        if not is_gpu_family(family) and gpu_type is not None:
+            QMessageBox.warning(self, "Validation Failed",
+                                "This is a CPU account — GPU resources aren't available on it.")
             return
-        
-        # Call parent method to accept dialog
+
+        # Resource ceilings for GPU jobs: memory needs enough cores (GB-per-core
+        # cap), and cores can't exceed the node type.
+        if gpu_type is not None:
+            try:
+                mem_gb = parse_mem_gb(self.memory.text())
+            except Exception:
+                mem_gb = 0
+            cpus = self.cpus.value()
+            need = min_cpus_for_mem(mem_gb, family)
+            if mem_gb and cpus < need:
+                QMessageBox.warning(self, "Validation Failed",
+                                    f"{mem_gb}G of memory needs at least {need} CPU cores on HPC3 "
+                                    f"(memory is capped per core). Raise CPU Cores to {need}.")
+                return
+            cpu_max = max_cpus_for(gpu_type, family)
+            if cpus > cpu_max:
+                QMessageBox.warning(self, "Validation Failed",
+                                    f"{gpu_type or 'This GPU'} nodes have at most {cpu_max} CPU cores.")
+                return
+
+        # Run-time cap (free 3 days / paid 14 days).
+        try:
+            hrs = parse_runtime_hours(self.time_limit.text())
+            cap = runtime_cap_hours(self.free_check.isChecked())
+            if hrs > cap + 1e-6:
+                QMessageBox.warning(self, "Validation Failed",
+                                    f"Time limit exceeds the {int(cap // 24)}-day cap for this queue.")
+                return
+        except Exception:
+            pass
+
         super().accept()
 
 
@@ -819,35 +805,14 @@ class TaskManagerWidget(QWidget):
                     'is_personal': a.get('is_personal', False),
                     'available': a.get('available', 0),
                 } for a in balance_data['accounts']]
-        rep.state("loading", "discovering GPU types")
-        return {'partitions': partitions, 'accounts': accounts,
-                'gpu_types': self._discover_gpu_types()}
-
-    def _discover_gpu_types(self):
-        """Best-effort GPU-type list for the dialog; falls back to HPC3's known set."""
-        gpu_types = [{"name": "No GPU", "value": None},
-                     {"name": "Any GPU (recommended)", "value": ""}]
-        found = set()
-        try:
-            from modules.node_status import NodeStatusManager
-            nm = NodeStatusManager(hostname=HPC_SERVER, username=self.username,
-                                   key_path=self.key_path)
-            out = nm.execute_ssh_command('sinfo -o "%60N %10c %10m  %30f %10G" -e')
-            for line in out.strip().split('\n')[1:]:
-                if "gpu:" in line:
-                    t = line.split("gpu:")[1].split(":")[0]
-                    if t and t not in ("N/A", ""):
-                        found.add(t)
-        except Exception as e:
-            logging.warning(f"GPU discovery failed, using defaults: {e}")
-        for t in (sorted(found) if found else ["V100", "A30", "A100", "L40S"]):
-            gpu_types.append({"name": f"{t} GPU (specific)", "value": t})
-        return gpu_types
+        # GPU types are no longer probed over SSH -- the submit dialog derives them
+        # locally from the chosen account's family (see modules/hpc3_constraints).
+        return {'partitions': partitions, 'accounts': accounts}
 
     def _open_submit_dialog(self, data):
         self.status_view.finish_ok("ready")
         dialog = JobSubmissionDialog(self, data['partitions'], data['accounts'],
-                                     self.username, gpu_types=data['gpu_types'])
+                                     self.username)
         if dialog.exec_() != QDialog.Accepted:
             return
         if dialog.account_combo.currentData() is None:
