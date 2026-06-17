@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.2.1...v0.3.0) (2026-06-17)
+
+
+### Features
+
+* show GPU VRAM in the GPU Type picker ([0543914](https://github.com/MolloiLab/hpc3-launcher/commit/0543914a7cd994f01cf505c9dd8601ea41614328))
+
+
+### Bug Fixes
+
+* clear stale known_hosts entry when writing a session's SSH config ([bb230f1](https://github.com/MolloiLab/hpc3-launcher/commit/bb230f10c255c4731b50c3ffc14077bd29b5228f))
+
 ## [0.2.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.2.0...v0.2.1) (2026-06-17)
 
 
