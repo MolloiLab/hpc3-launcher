@@ -27,8 +27,8 @@ On Windows, double-click the `setup.exe` to install (Start Menu shortcut + unins
 
 The macOS build is **not yet notarized by Apple**, so the first launch needs one extra step. This is a one-time thing.
 
-1. Open the `.dmg` and drag **HPC3-Launcher** into **Applications**.
-2. Clear the download quarantine flag (this is what lets it open without the *"Apple cannot check it for malicious software"* error). Open **Terminal** and run:
+1. Open the `.dmg` and drag **HPC3-Launcher** into **Applications**. No admin rights? Drag it into `~/Applications` in your home folder instead (create that folder if it doesn't exist) — it runs the same.
+2. Clear the download quarantine flag (this is what lets it open without the *"Apple cannot check it for malicious software"* error). Open **Terminal** and run (adjust the path if you used `~/Applications`):
 
    ```bash
    xattr -dr com.apple.quarantine "/Applications/HPC3-Launcher.app"
