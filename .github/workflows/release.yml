@@ -135,14 +135,20 @@ jobs:
             --hidden-import PyQt5.QtCore --hidden-import PyQt5.QtGui `
             --icon hpc3_launcher/resources/icon.ico `
             hpc3_launcher/main.py
-      - name: Zip + attach to release
+      - name: Build installer (Inno Setup)
+        run: |
+          # Inno Setup turns the PyInstaller one-folder build into a single
+          # download-and-run setup.exe (the Windows analog of the macOS .dmg).
+          choco install innosetup --no-progress -y
+          $ver = $env:TAG -replace '^v',''
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & "$iscc" "/DAppVersion=$ver" windows-installer.iss
+      - name: Attach installer to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ver = $env:TAG -replace '^v',''
-          $zip = "HPC3-Launcher-$ver-windows.zip"
-          Compress-Archive -Path dist/HPC3-Launcher/* -DestinationPath $zip
-          gh release upload "$env:TAG" $zip --clobber
+          gh release upload "$env:TAG" "HPC3-Launcher-$ver-windows-setup.exe" --clobber
 
   linux:
     runs-on: ubuntu-latest
@@ -249,7 +255,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - name: Download published zip, extract and launch headless
+      - name: Download published installer, install silently and launch headless
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -257,11 +263,15 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force verify | Out-Null
           Set-Location verify
-          gh release download "$env:TAG" --repo "$env:GITHUB_REPOSITORY" -p "HPC3-Launcher-*-windows.zip" --clobber
-          $zip = Get-ChildItem "HPC3-Launcher-*-windows.zip" | Select-Object -First 1
-          Expand-Archive -Path $zip.FullName -DestinationPath app -Force
-          $exe = Get-ChildItem -Path app -Filter HPC3-Launcher.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { throw "HPC3-Launcher.exe not found inside the published zip" }
+          gh release download "$env:TAG" --repo "$env:GITHUB_REPOSITORY" -p "HPC3-Launcher-*-windows-setup.exe" --clobber
+          $setup = Get-ChildItem "HPC3-Launcher-*-windows-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "installer not found in release assets" }
+          Write-Host "Installing $($setup.Name) silently"
+          Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          # Inno installs to Program Files (64-bit) here; check both to be safe.
+          $exe = Get-ChildItem -Path "$env:ProgramFiles\HPC3 Launcher","${env:ProgramFiles(x86)}\HPC3 Launcher" `
+                   -Filter HPC3-Launcher.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "HPC3-Launcher.exe not found after install" }
           $env:HPC3_SMOKE_TEST = "1"
           $env:HPC3_SMOKE_MARKER = "$PWD\marker.txt"
           $env:QT_QPA_PLATFORM = "offscreen"

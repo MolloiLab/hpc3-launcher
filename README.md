@@ -18,8 +18,10 @@ Grab the latest installer from the [**Releases**](https://github.com/MolloiLab/h
 | Platform | File |
 |----------|------|
 | macOS    | `HPC3-Launcher-<version>-macos.dmg` |
-| Windows  | `HPC3-Launcher-<version>-windows.zip` |
+| Windows  | `HPC3-Launcher-<version>-windows-setup.exe` |
 | Linux    | `HPC3-Launcher-<version>-linux.deb` |
+
+On Windows, double-click the `setup.exe` to install (Start Menu shortcut + uninstaller included).
 
 ## Installing on macOS (first launch)
 
@@ -62,7 +64,7 @@ Releases are automated:
 
 - **release-please** watches `main` and keeps a "Release PR" open that bumps the version and updates `CHANGELOG.md` from [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, …).
 - Merging that PR tags `vX.Y.Z` and publishes a GitHub Release.
-- The **build-release** workflow then builds the macOS `.dmg`, Windows `.zip`, and Linux `.deb` and attaches them to that release.
+- The **build-release** workflow then builds the macOS `.dmg`, Windows `setup.exe` (Inno Setup installer), and Linux `.deb` and attaches them to that release.
 - **Every release is launch-tested on all three OSes before it's trusted.** A `verify-<os>` job re-downloads the *published* installer, installs/extracts it exactly as a user would, and launches the frozen app headlessly (`QT_QPA_PLATFORM=offscreen`). The app builds its full main window, confirms the Qt event loop starts, and writes a marker; the job fails if it doesn't — so a package that can't actually run (the old Windows failure mode) turns the release red instead of shipping broken.
 
 To set up zero-friction (notarized) macOS builds, see [`docs/SIGNING.md`](docs/SIGNING.md).
