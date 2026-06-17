@@ -385,6 +385,7 @@ class VSCodeWidget(QWidget):
         self.gpu_count_spinbox.setMaximum(8)
         self.gpu_count_spinbox.setValue(1)
         self.gpu_count_spinbox.setEnabled(False)  # until a GPU is selected
+        self.gpu_count_spinbox.valueChanged.connect(self.on_gpu_count_changed)
         grid.addWidget(self.gpu_count_spinbox, row, 1)
         row += 1
 
@@ -531,6 +532,12 @@ class VSCodeWidget(QWidget):
             return
         self._apply_cascade()
 
+    def on_gpu_count_changed(self, _value):
+        # #GPUs feeds the CPU floor (2 cores/GPU), so recompute the cascade.
+        if self._applying:
+            return
+        self._apply_cascade()
+
     def on_free_changed(self, index):
         if self._applying:
             return
@@ -581,14 +588,21 @@ class VSCodeWidget(QWidget):
             else:
                 self.gpu_count_spinbox.setEnabled(False)
 
-            # CPUs: floor from memory (GB-per-core cap), ceiling from the node type.
+            # CPUs are DERIVED from memory: HPC3 caps RAM per core (partition-
+            # specific -- 6 GB/core on gpu32, 9 on gpu), so memory fixes the exact
+            # core count SLURM will allocate (and GPU jobs are floored at 2/GPU).
+            # We pin the value to that, so the picker shows the real number (e.g.
+            # 32G on gpu32 -> 6) instead of one SLURM would silently bump.
             if valid_account:
                 mem_gb = hc.parse_mem_gb(self.memory_combo.currentText())
+                gpu_count = self.gpu_count_spinbox.value() if gpu_type is not None else 0
                 cpu_max = hc.max_cpus_for(gpu_type, family)
-                cpu_min = min(hc.min_cpus_for_mem(mem_gb, family), cpu_max)
+                cpu_need = min(hc.required_cpus(mem_gb, gpu_count, account, gpu_type, use_free), cpu_max)
                 self.cpu_spinbox.setEnabled(True)
-                self.cpu_spinbox.setMaximum(cpu_max)   # set max before min so the
-                self.cpu_spinbox.setMinimum(cpu_min)   # range is never transiently inverted
+                self.cpu_spinbox.setMinimum(1)
+                self.cpu_spinbox.setMaximum(cpu_max)
+                self.cpu_spinbox.setValue(cpu_need)     # memory drives CPUs exactly
+                self.cpu_spinbox.setMinimum(cpu_need)   # and you can't drop below it
             else:
                 self.cpu_spinbox.setEnabled(False)
 

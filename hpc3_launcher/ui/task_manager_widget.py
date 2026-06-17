@@ -14,7 +14,7 @@ import time
 from modules.slurm import SlurmManager
 from modules.auth import HPC_SERVER, get_all_existing_users
 from modules.hpc3_constraints import (account_family, is_gpu_family, family_gpu_options,
-                                      max_gpus_for, max_cpus_for, min_cpus_for_mem,
+                                      max_gpus_for, max_cpus_for, required_cpus,
                                       partition_for, runtime_cap_hours,
                                       parse_mem_gb, parse_runtime_hours)
 from core.ssh_session import SSHWorker
@@ -449,11 +449,13 @@ echo "Job complete"
             except Exception:
                 mem_gb = 0
             cpus = self.cpus.value()
-            need = min_cpus_for_mem(mem_gb, family)
+            need = required_cpus(mem_gb, self.gpu_count.value(), account, gpu_type,
+                                 self.free_check.isChecked())
             if mem_gb and cpus < need:
                 QMessageBox.warning(self, "Validation Failed",
                                     f"{mem_gb}G of memory needs at least {need} CPU cores on HPC3 "
-                                    f"(memory is capped per core). Raise CPU Cores to {need}.")
+                                    f"(SLURM caps memory per core and would raise it anyway). "
+                                    f"Set CPU Cores to {need}.")
                 return
             cpu_max = max_cpus_for(gpu_type, family)
             if cpus > cpu_max:

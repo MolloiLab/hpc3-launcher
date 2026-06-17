@@ -46,15 +46,28 @@ _FAMILY_MODEL_ORDER = {
     "cpu":   [],
 }
 
-# Partition family -> partition names + limits.
-#   paid / free  : SLURM partition names (free = no SU charge, preemptible)
-#   mem_per_cpu  : max GB of RAM requestable per CPU core on this family
-#   node_cpus    : largest CPU-core count across nodes in this family
+# Partition family -> partition names + the largest CPU-core count across nodes
+# in the family (the ceiling for "Any GPU"). paid/free are the SLURM partitions.
 FAMILIES = {
-    "gpu":   {"paid": "gpu",      "free": "free-gpu",      "mem_per_cpu": 9,  "node_cpus": 40},
-    "gpu32": {"paid": "gpu32",    "free": "free-gpu32",    "mem_per_cpu": 9,  "node_cpus": 48},
-    "cpu":   {"paid": "standard", "free": "free",          "mem_per_cpu": 18, "node_cpus": 64},
+    "gpu":   {"paid": "gpu",      "free": "free-gpu",   "node_cpus": 40},
+    "gpu32": {"paid": "gpu32",    "free": "free-gpu32", "node_cpus": 48},
+    "cpu":   {"paid": "standard", "free": "free",       "node_cpus": 64},
 }
+
+# MaxMemPerCPU (GB) PER PARTITION -- the hard cap SLURM enforces. Request more
+# memory than (this * cpus) and SLURM silently raises --cpus-per-task to fit, so
+# the launcher derives CPUs from memory using these exact numbers. Note it is
+# partition-specific (gpu32 is 6, not 9; the free CPU queue is higher than paid).
+# Verified via `scontrol show partition` on HPC3, 2026-06.
+MEM_PER_CPU_GB = {
+    "gpu": 9, "free-gpu": 9,
+    "gpu32": 6, "free-gpu32": 6,
+    "standard": 6, "free": 18,
+}
+
+# HPC3 GPU partitions default to 2 cores per GPU (DefCpuPerGPU) -- used as a
+# sensible CPU floor for GPU jobs so a GPU never gets just 1 core.
+DEF_CPU_PER_GPU = 2
 
 # Max wall time (hours) by tier: free partitions cap at 3 days, paid at 14 days.
 RUNTIME_MAX_HOURS = {"free": 72, "paid": 336}
@@ -120,15 +133,25 @@ def max_cpus_for(gpu_type, family):
     return FAMILIES.get(family, FAMILIES["cpu"])["node_cpus"]
 
 
-def min_cpus_for_mem(mem_gb, family):
-    """Fewest CPU cores needed to be allowed the requested memory.
+def mem_per_cpu_gb(account, gpu_type, use_free):
+    """MaxMemPerCPU (GB) of the partition this request resolves to."""
+    return MEM_PER_CPU_GB.get(partition_for(account, gpu_type, use_free), 6)
 
-    HPC3 caps RAM at a fixed number of GB per core (9 on GPU partitions), so
-    asking for more memory implicitly requires more cores. This is why picking a
-    larger "Memory Size" raises the "Number of CPUs" floor.
+
+def required_cpus(mem_gb, gpu_count, account, gpu_type, use_free):
+    """The exact CPU count HPC3 will allocate for this request.
+
+    SLURM caps RAM at MaxMemPerCPU GB per core on the target partition, so a job
+    needs at least ceil(mem / MaxMemPerCPU) cores -- request fewer and SLURM
+    silently bumps --cpus-per-task up to this. GPU jobs are also floored at
+    DefCpuPerGPU (2) cores per GPU. Deriving CPUs from memory with this is why
+    the picker shows the real number (e.g. 32G on gpu32 -> 6, not 4).
     """
-    per = FAMILIES.get(family, FAMILIES["cpu"])["mem_per_cpu"]
-    return max(1, math.ceil(mem_gb / per))
+    per = mem_per_cpu_gb(account, gpu_type, use_free)
+    need = max(1, math.ceil(mem_gb / per))
+    if gpu_type is not None:  # a GPU was requested
+        need = max(need, DEF_CPU_PER_GPU * max(1, gpu_count))
+    return need
 
 
 def runtime_cap_hours(use_free):
