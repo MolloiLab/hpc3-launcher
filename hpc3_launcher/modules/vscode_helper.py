@@ -10,6 +10,7 @@ import os
 import subprocess
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, Qt
 from modules.hpc3_constraints import partition_for, account_family
+from modules.ssh_config_blocks import strip_blocks_for_node
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -775,6 +776,17 @@ Host {hostname}
                 # `.*?` matched EVERY session, so writing one session's block deleted
                 # all the others -- which is why a 2nd session wiped the 1st's config.)
                 existing_config = _config_block_re(re.escape(str(job_id))).sub('', existing_config)
+                # Also drop any OTHER job's block for this same node. A node is
+                # allocated to one job at a time, so such a block describes an
+                # allocation that has ended -- and leaving it costs more than clutter:
+                # OpenSSH uses the FIRST value it finds for each keyword, while we
+                # append, so the oldest dead block wins and every connection to this
+                # node is routed through a jump host whose job finished long ago.
+                # (Seen in the wild: 45 blocks for 8 nodes, all 8 resolving to their
+                # earliest job.) Only our own marked blocks are touched.
+                existing_config, stale = strip_blocks_for_node(existing_config, hostname)
+                if stale:
+                    logger.info(f"Removed {stale} stale SSH config block(s) for node {hostname}")
                 with open(config_file, 'w') as f:
                     if existing_config.strip():
                         f.write(existing_config.rstrip() + "\n")
