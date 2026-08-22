@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.3.0...v0.3.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* drop a node's stale SSH config blocks when its job changes ([#5](https://github.com/MolloiLab/hpc3-launcher/issues/5)) ([5b8e011](https://github.com/MolloiLab/hpc3-launcher/commit/5b8e0111f76703b139a48a67e90e25035162fb43))
+
 ## [0.3.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.2.1...v0.3.0) (2026-06-17)
 
 
