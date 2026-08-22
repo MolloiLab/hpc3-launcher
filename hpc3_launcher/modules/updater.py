@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Constants
-VERSION = "0.3.0"  # x-release-please-version
+VERSION = "0.3.1"  # x-release-please-version
 GITHUB_REPO = "MolloiLab/hpc3-launcher"  # GitHub repo used for update checks + releases
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_INTERVAL = 24 * 60 * 60  # Check every 24 hours (in seconds)
