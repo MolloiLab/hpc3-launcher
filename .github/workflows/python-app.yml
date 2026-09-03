@@ -1,5 +1,13 @@
 name: HPC3 Launcher CI
 
+# What broke before this file was rewritten: it installed pytest and then never
+# ran a test. Linting and `py_compile` on three files, on Linux only. So the
+# regression suite for the SSH-config writer -- a bug that only ever showed up
+# on Windows -- would not have run anywhere, on any OS.
+#
+# Now: the suite runs on all three OSes, and on Windows it is judged by Windows'
+# own OpenSSH parser rather than by our idea of what OpenSSH accepts.
+
 on:
   push:
     branches: [ main ]
@@ -7,40 +15,75 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python 3.8
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.8
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install flake8 pytest
-        if [ -f requirements.txt ]; then 
-          # Install basic requirements without GUI dependencies which might fail in CI
-          pip install packaging requests
-        fi
-    
-    - name: Lint with flake8
-      run: |
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Exit-zero treats all errors as warnings
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-    
-    - name: Basic Python syntax checking
-      run: |
-        # Check Python syntax without running the actual code
-        python -m py_compile hpc3_launcher/main.py
-        python -m py_compile hpc3_launcher/modules/updater.py
-        python -m py_compile hpc3_launcher/ui/update_dialog.py
-        
-    - name: Check Python version
-      run: |
-        python --version 
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # PyQt5 pulls in libGL on Linux even for a QtCore-only import path in some
+      # wheels; cheap insurance against an import-time failure that has nothing
+      # to do with the code under test.
+      - name: Linux Qt runtime deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libegl1 libglib2.0-0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # The suite checks generated configs against the real ssh binary. Prove one
+      # exists on every runner: HPC3_REQUIRE_SSH=1 turns "no ssh, skip those
+      # tests" into a hard failure, so coverage can't quietly evaporate.
+      - name: Show the OpenSSH the tests will be judged by
+        run: ssh -V
+
+      - name: Run tests
+        env:
+          HPC3_REQUIRE_SSH: "1"
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip && pip install flake8
+      - name: Lint with flake8
+        run: |
+          # Syntax errors and undefined names fail the build.
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics \
+            --exclude .venv,build,dist,tests/test_v0.0.2
+          # Everything else is advisory.
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 \
+            --statistics --exclude .venv,build,dist,tests/test_v0.0.2
+
+  formal:
+    name: formal (TLA+)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Cache tla2tools.jar
+        uses: actions/cache@v4
+        with:
+          path: formal/.tla
+          key: tla2tools-latest
+      # Model-checks the concurrent ~/.ssh/config read-modify-write, and asserts
+      # the lock-free mutant still fails -- see formal/check.sh for what this
+      # does and does not cover.
+      - name: Model-check with TLC
+        run: ./formal/check.sh

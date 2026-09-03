@@ -353,3 +353,208 @@ jobs:
           else
             echo "FAIL (Linux): packaged app did not reach the Qt event loop"; exit 1
           fi
+
+  # ---- The release page itself. Everything above proves the installers work;
+  # this turns the release into something a lab member can actually act on:
+  # which file to download, what each OS will complain about on first launch, and
+  # what to do about it. It runs AFTER the verify jobs, so a guide is only ever
+  # appended to a release whose installers have been launch-tested.
+  #
+  # The guide adapts to how the build was signed. Signing here is progressive (see
+  # the header of this file), so telling every user to run `xattr` when the DMG is
+  # actually notarized would be wrong -- and worse, would train them to disable
+  # protections they don't need to.
+  release-notes:
+    name: release install guide
+    needs: [verify-macos, verify-windows, verify-linux]
+    runs-on: ubuntu-latest
+    env:
+      MAC_SIGNED: ${{ secrets.MACOS_NOTARY_APPLE_ID != '' && secrets.MACOS_DEVELOPER_ID != '' }}
+      WIN_SIGNED: ${{ secrets.TRUSTED_SIGNING_ENDPOINT != '' }}
+    steps:
+      - name: Append install guide to release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+
+          # Drop a guide left by an earlier run so re-running UPDATES it in place
+          # instead of appending a second copy or skipping. The marker is an HTML
+          # comment rather than a heading, so rewording headings can't strand an
+          # old guide on the page forever.
+          awk '/^<!-- install-guide -->$/{exit} {print}' notes.md > trimmed.md
+          # Drop trailing blank lines too, or the guide's leading blank line would
+          # accumulate one more every time this job re-runs against the same release.
+          awk 'NF{last=NR} {line[NR]=$0} END{for (i=1; i<=last; i++) print line[i]}' \
+            trimmed.md > notes.md
+
+          cat >> notes.md <<'EOF'
+
+          <!-- install-guide -->
+          ## Install
+
+          Download one file for your platform, from **Assets** at the bottom of this page.
+          Nothing else is needed — Python, Qt and the SSH tooling are bundled.
+
+          | Platform | Download | Admin rights |
+          |----------|----------|--------------|
+          | macOS 11+ (Apple Silicon or Intel) | `HPC3-Launcher-__VER__-macos.dmg` | not needed |
+          | Windows 10/11 (64-bit) | `HPC3-Launcher-__VER__-windows-setup.exe` | not needed |
+          | Debian / Ubuntu (64-bit) | `HPC3-Launcher-__VER__-linux.deb` | needed, for `dpkg` |
+
+          ### Before you start
+
+          - Your **UCInetID** and password, and **Duo** on your phone.
+          - **Off campus? Connect to the UCI VPN first.** HPC3 is not reachable from the open
+            internet, so without it the app reports that it can't reach the cluster.
+          EOF
+
+          # ---- macOS ---------------------------------------------------------
+          if [ "$MAC_SIGNED" = "true" ]; then
+            cat >> notes.md <<'EOF'
+
+          ### macOS
+
+          Open the `.dmg`, drag **HPC3-Launcher** into **Applications**, and open it. This build is
+          signed with an Apple Developer ID and notarized, so there are no warnings and no Terminal
+          steps.
+          EOF
+          else
+            cat >> notes.md <<'EOF'
+
+          ### macOS
+
+          1. Open the `.dmg` and drag **HPC3-Launcher** into **Applications**. No admin rights? Drag
+             it into `~/Applications` in your home folder instead (create that folder if it doesn't
+             exist) — it runs exactly the same.
+          2. This build is **not yet notarized by Apple**, so clear the download quarantine once.
+             In **Terminal**:
+
+             ```sh
+             xattr -dr com.apple.quarantine "/Applications/HPC3-Launcher.app"
+             ```
+
+             Used `~/Applications`? Put that path in the command instead.
+          3. Open **HPC3-Launcher** from Applications normally.
+
+          <details>
+          <summary>Prefer not to use Terminal?</summary>
+
+          Double-click the app and let macOS block it. Then open **System Settings → Privacy &
+          Security**, scroll to the message about HPC3-Launcher, and click **Open Anyway**. Open the
+          app again and choose **Open**.
+          </details>
+
+          <details>
+          <summary>It says HPC3-Launcher "is damaged and can't be opened"</summary>
+
+          Nothing is damaged. That is macOS's generic wording for an app that isn't signed with a
+          paid Developer ID, and on Apple Silicon clearing quarantine alone is sometimes not enough.
+          Re-sign the app locally and it opens:
+
+          ```sh
+          codesign --force --deep --sign - "/Applications/HPC3-Launcher.app"
+          ```
+          </details>
+
+          The quarantine step disappears once the project has an Apple Developer ID — see
+          [`docs/SIGNING.md`](https://github.com/MolloiLab/hpc3-launcher/blob/main/docs/SIGNING.md).
+          EOF
+          fi
+
+          # ---- Windows -------------------------------------------------------
+          if [ "$WIN_SIGNED" = "true" ]; then
+            cat >> notes.md <<'EOF'
+
+          ### Windows
+
+          Double-click `HPC3-Launcher-__VER__-windows-setup.exe`. It installs **per-user, with no
+          admin rights and no UAC prompt** — so it works on lab machines you don't administer — and
+          adds a Start Menu shortcut and an uninstaller. The installer is Authenticode-signed, so
+          SmartScreen stays quiet.
+          EOF
+          else
+            cat >> notes.md <<'EOF'
+
+          ### Windows
+
+          1. Double-click `HPC3-Launcher-__VER__-windows-setup.exe`. It installs **per-user, with no
+             admin rights and no UAC prompt** — so it works on lab machines you don't administer —
+             and adds a Start Menu shortcut and an uninstaller.
+          2. The installer is **not yet code-signed**, so **SmartScreen** may show *"Windows
+             protected your PC."* Click **More info → Run anyway**. One time only.
+
+          This warning goes away once Azure Trusted Signing is configured — see
+          [`docs/SIGNING.md`](https://github.com/MolloiLab/hpc3-launcher/blob/main/docs/SIGNING.md).
+          EOF
+          fi
+
+          cat >> notes.md <<'EOF'
+
+          HPC3 Launcher uses Windows' built-in **OpenSSH Client**, which is enabled by default on
+          Windows 10 version 1809 and later. If signing in fails with `ssh-keygen not found`, turn it
+          on once under **Settings → Apps → Optional features → Add a feature → OpenSSH Client**.
+
+          ### Linux
+
+          ```sh
+          sudo dpkg -i HPC3-Launcher-__VER__-linux.deb
+          sudo apt-get install -f   # only if dpkg reports missing dependencies
+          ```
+
+          Then launch **HPC3 Launcher** from your applications menu, or run
+          `/usr/local/bin/HPC3-Launcher`.
+
+          ## First launch
+
+          Sign in with your **UCInetID** and password, then approve the **Duo Push** on your phone.
+          The app generates an SSH key (`~/.ssh/<UCInetID>_hpc_app_key`) and installs it on HPC3, so
+          every launch after this one connects with no password and no Duo prompt.
+
+          From there: **Job Management** to submit and cancel Slurm jobs, **Node Status** for live
+          CPU/memory/GPU usage, **VSCode** to run one or several remote sessions (each writes its own
+          `~/.ssh/config` entry, so `Remote-SSH: Connect to Host…` just works), and **Account
+          Balance** for your SUs.
+
+          ## Updating
+
+          Use **Help → Check for Updates** inside the app, or download the newer installer from this
+          page and install over the top. Your SSH key is kept, so you can sign back in with it
+          instead of going through Duo again.
+
+          ## Every installer here was launch-tested
+
+          Before these notes were written, each installer on this page was re-downloaded *from this
+          release*, installed the way you would install it, and launched headlessly on macOS, Windows
+          and Linux. Each one had to build its full main window and start its Qt event loop. A
+          package that can't actually run turns the release red instead of shipping.
+
+          ## Uninstalling
+
+          - **macOS** — drag **HPC3-Launcher** from Applications to the Trash.
+          - **Windows** — *Settings → Apps → Installed apps → HPC3 Launcher → Uninstall*.
+          - **Linux** — `sudo apt-get remove hpc3-launcher`
+
+          Uninstalling leaves your SSH key and the app's `~/.ssh/config` entries behind. To remove
+          those too, delete `~/.ssh/<UCInetID>_hpc_app_key*` and any `HPC3 Launcher VSCode` blocks in
+          `~/.ssh/config`.
+
+          ## If something goes wrong
+
+          | Symptom | Cause |
+          |---------|-------|
+          | "Can't reach HPC3" / "couldn't resolve hpc3.rcic.uci.edu" | Not on the UCI VPN. Connect and retry. |
+          | Sign-in hangs after your password | Duo Push is waiting on your phone — approve it. |
+          | "HPC3 rejected the key" | The key isn't on the cluster any more. Sign in with your password + Duo to reinstall it. |
+          | `ssh-keygen not found` (Windows) | Enable the OpenSSH Client optional feature, above. |
+
+          Anything else — including a bug report — goes to
+          [Issues](https://github.com/MolloiLab/hpc3-launcher/issues).
+          EOF
+
+          # The guide is written with a literal placeholder so every heredoc can stay
+          # quoted: the prose is full of backticks and $ that must not be expanded.
+          sed "s/__VER__/$VER/g" notes.md > final.md && mv final.md notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

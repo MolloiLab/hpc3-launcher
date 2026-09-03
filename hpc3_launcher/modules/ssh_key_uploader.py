@@ -24,6 +24,10 @@ import paramiko
 
 from core.ssh_session import HPC_SERVER, SSH_PORT, SSHError, key_path_for, APP_MARKER
 
+# The app is packaged with PyInstaller --windowed; without this every ssh-keygen
+# call would flash a console window on Windows.
+_NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
 
 def generate_and_upload_ssh_key(username, password, host=HPC_SERVER, port=SSH_PORT,
                                 key_comment=None, force=True, reporter=None):
@@ -56,11 +60,13 @@ def generate_and_upload_ssh_key(username, password, host=HPC_SERVER, port=SSH_PO
     try:
         subprocess.run(
             ["ssh-keygen", "-t", "ed25519", "-f", key_file, "-N", "", "-C", comment],
-            check=True, capture_output=True,
+            check=True, capture_output=True, **_NO_WINDOW,
         )
     except FileNotFoundError:
         raise SSHError("ssh-keygen not found",
-                       "OpenSSH must be installed (it ships with macOS/Linux).")
+                       "OpenSSH must be installed. It ships with macOS and Linux; on "
+                       "Windows enable Settings > Apps > Optional features > "
+                       "OpenSSH Client.")
     except subprocess.CalledProcessError as e:
         raise SSHError(f"ssh-keygen failed: {e.stderr.decode('utf-8', 'replace')}",
                        "Check that ~/.ssh is writable.")
