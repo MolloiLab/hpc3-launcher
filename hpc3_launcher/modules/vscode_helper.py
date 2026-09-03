@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import io
 import re
 import logging
 import paramiko
+import shlex
 import threading
 import time
 import os
@@ -38,6 +40,150 @@ def _config_block_re(job_id=r".*?"):
 # session polls on its own thread and they all edit this one file, so without a
 # lock two sessions starting together can clobber each other's config block.
 _SSH_CONFIG_LOCK = threading.Lock()
+
+# PyInstaller ships this app as --windowed, so on Windows every subprocess would
+# flash a console window unless we explicitly ask for none.
+_NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+
+# --- Sanitising what Slurm hands back ------------------------------------------
+#
+# Slurm reports "no node yet" as prose, not as an empty field: ``sacct`` prints
+# "None assigned" for a job that never got an allocation, ``squeue`` prints
+# "(None)". The old code tested `if node:` and so accepted the *string*
+# "None assigned" as a hostname, which put this in the user's ~/.ssh/config:
+#
+#     Host None assigned
+#         HostName None assigned
+#
+# OpenSSH answers that with "keyword hostname extra arguments at end of line" and
+# then TERMINATES -- it stops reading the file entirely, so every host the user
+# has ever configured stops working, not just ours. That is why nothing may reach
+# the config unless it actually looks like a hostname.
+
+# Values that pass the shape test below but still mean "nothing here".
+_NO_NODE_VALUES = {"", "none", "null", "n/a", "na", "unknown", "unassigned"}
+
+# A Slurm node name. Deliberately strict: anything containing whitespace, a quote
+# or a shell/config metacharacter is not a node name and must never be written out.
+_NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+# Slurm states meaning "this job is over". ``sacct`` decorates some of them
+# ("CANCELLED by 3012547"), which is why callers must go through
+# ``is_terminal_state`` instead of comparing the raw string.
+_TERMINAL_STATES = {
+    "COMPLETED", "CANCELLED", "FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
+    "PREEMPTED", "BOOT_FAIL", "DEADLINE", "REVOKED", "SPECIAL_EXIT",
+}
+
+
+def clean_node_name(value):
+    """Return a usable compute-node hostname, or None if Slurm gave us no node."""
+    if value is None:
+        return None
+    node = str(value).strip()
+    if node.lower() in _NO_NODE_VALUES:
+        return None
+    if not _NODE_NAME_RE.match(node):
+        logger.warning("ignoring implausible node name from Slurm: %r", value)
+        return None
+    return node
+
+
+def clean_port(value, default="22"):
+    """Return a valid TCP port as a string, falling back to ``default``."""
+    port = str(value if value is not None else "").strip()
+    if port.isdigit() and 0 < int(port) < 65536:
+        return port
+    return default
+
+
+def normalize_job_state(state):
+    """First word of a Slurm state, upper-cased ("CANCELLED by 3012547" -> "CANCELLED")."""
+    return str(state or "").strip().split(" ")[0].upper()
+
+
+def is_terminal_state(state):
+    """True if the job has finished. Handles sacct's "CANCELLED by <uid>" form."""
+    return normalize_job_state(state) in _TERMINAL_STATES
+
+
+# --- Healing a config we may already have broken -------------------------------
+
+def _directive_token_count(line):
+    """Number of tokens in an ssh_config directive, honouring quoted arguments.
+
+    ``posix=False`` keeps Windows backslashes intact, so
+    ``IdentityFile "C:\\Users\\Jo Smith\\.ssh\\key"`` counts as two tokens, not four.
+    Unbalanced quotes return -1: also broken, also must go.
+    """
+    try:
+        return len(shlex.split(line, posix=False))
+    except ValueError:
+        return -1
+
+
+# The only directives this app ever writes. A block containing anything else is
+# not purely ours -- most likely the regex over-matched because an END marker went
+# missing -- so we leave it alone rather than risk deleting the user's own config.
+_OUR_DIRECTIVES = {
+    "host", "hostname", "user", "port", "identityfile", "proxyjump",
+    "stricthostkeychecking", "userknownhostsfile",
+}
+
+
+def prune_broken_blocks(text):
+    """Drop any of *our* managed blocks that OpenSSH would refuse to parse.
+
+    Installs in the wild already have `HostName None assigned` on disk, and one bad
+    line makes ssh abandon the whole file -- so it isn't enough to stop writing bad
+    blocks, the app has to clean up the ones it already wrote.
+
+    Every directive we emit is ``Keyword SingleArgument``, so a block of purely our
+    keywords containing anything else is ours and is malformed. Deliberately
+    conservative in the other direction: a block mentioning a keyword we never write
+    is left untouched, because a user's legitimate ``Host dev prod staging`` also has
+    three tokens and must never be collateral damage.
+
+    Returns ``(text, dropped_lines)``.
+    """
+    dropped = []
+
+    def _maybe_drop(match):
+        block = match.group(0)
+        directives = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            keyword = stripped.split(None, 1)[0].rstrip("=").lower()
+            if keyword not in _OUR_DIRECTIVES:
+                return block  # not purely ours -- hands off
+            directives.append(stripped)
+        for stripped in directives:
+            if _directive_token_count(stripped) != 2:
+                dropped.append(stripped)
+                return ""
+        return block
+
+    return _config_block_re().sub(_maybe_drop, text), dropped
+
+
+def _read_ssh_config(path):
+    """Read an ssh_config as text. utf-8 with surrogateescape so a stray byte in the
+    user's own file (very likely on a cp1252 Windows box) can't blow up the whole
+    read-modify-write -- and so those bytes round-trip untouched on the way back."""
+    with io.open(path, "r", encoding="utf-8", errors="surrogateescape") as handle:
+        return handle.read()
+
+
+def _write_ssh_config(path, text):
+    with io.open(path, "w", encoding="utf-8", errors="surrogateescape") as handle:
+        handle.write(text)
+    try:
+        os.chmod(path, 0o600)  # no-op on Windows, which uses ACLs
+    except OSError as e:
+        logger.warning("could not chmod %s: %s", path, e)
 
 
 class VSCodeManager(QObject):
@@ -82,7 +228,36 @@ class VSCodeManager(QObject):
         # Connect lazily -- the first SSH call (on a worker thread) opens the
         # connection. Connecting in __init__ would block the UI thread that builds
         # this manager, freezing the window right after login.
-    
+
+        # Purely local, no network: heal a config an older build may have corrupted
+        # so ssh works again even if the user never launches another session.
+        self.repair_local_ssh_config()
+
+    def repair_local_ssh_config(self):
+        """Delete any of our own SSH-config blocks that OpenSSH can't parse.
+
+        A single bad directive makes ssh abort the whole file, so a config broken by
+        an earlier release breaks *every* host the user has -- including the ones we
+        wrote correctly. Best-effort and silent when there's nothing to do.
+        """
+        config_file = os.path.expanduser("~/.ssh/config")
+        try:
+            if not os.path.exists(config_file):
+                return 0
+            with _SSH_CONFIG_LOCK:
+                existing = _read_ssh_config(config_file)
+                cleaned, dropped = prune_broken_blocks(existing)
+                if not dropped:
+                    return 0
+                _write_ssh_config(config_file, cleaned)
+            for line in dropped:
+                logger.warning("repaired ~/.ssh/config: dropped malformed line %r", line)
+            logger.info("repaired ~/.ssh/config (%d malformed block(s) removed)", len(dropped))
+            return len(dropped)
+        except Exception as e:
+            logger.error("could not repair ~/.ssh/config: %s", e)
+            return 0
+
     def connect_ssh(self):
         """Connect to SSH server"""
         try:
@@ -354,7 +529,7 @@ class VSCodeManager(QObject):
                     parts = output.split()
                     if len(parts) >= 1:
                         status = parts[0]
-                        node = parts[1] if len(parts) > 1 else "Not assigned"
+                        node = clean_node_name(parts[1] if len(parts) > 1 else None)
                         
                         # Update job information
                         self.current_job['status'] = status
@@ -408,8 +583,10 @@ class VSCodeManager(QObject):
             if "Configuration file not found" in output:
                 # Query job information
                 job_info = self.get_job_status(job_id)
-                node = job_info.get('node') if job_info else None
-                
+                # clean_node_name, not truthiness: sacct says "None assigned" for a
+                # job that never got an allocation, and that string is truthy.
+                node = clean_node_name(job_info.get('node')) if job_info else None
+
                 if node:
                     # If there is a node, construct basic configuration
                     config = {
@@ -437,19 +614,15 @@ class VSCodeManager(QObject):
             port = None
             
             if hostname_match:
-                hostname = hostname_match.group(1)
-            else:
+                hostname = clean_node_name(hostname_match.group(1))
+            if not hostname:
                 # Try to find hostname from node line
                 node_match = re.search(r'Node:\s+(\S+)', output)
                 if node_match:
-                    hostname = node_match.group(1)
-            
-            if port_match:
-                port = port_match.group(1)
-            else:
-                # Default port
-                port = "22"
-            
+                    hostname = clean_node_name(node_match.group(1))
+
+            port = clean_port(port_match.group(1) if port_match else None)
+
             if not hostname:
                 logger.warning(f"Unable to parse hostname from output: {output}")
                 return None
@@ -510,7 +683,9 @@ class VSCodeManager(QObject):
                             parts = line.split('|')
                             if len(parts) >= 3:
                                 state = parts[2]
-                                node = parts[3] if len(parts) > 3 else ""
+                                # sacct's NodeList is "None assigned" when the job
+                                # never ran -- prose, not a hostname.
+                                node = clean_node_name(parts[3] if len(parts) > 3 else None)
                                 
                                 # Return job status
                                 return {
@@ -532,7 +707,7 @@ class VSCodeManager(QObject):
             if len(parts) >= 3:
                 job_name = parts[0]
                 status = parts[2]
-                node = parts[3] if len(parts) > 3 and parts[3] != '(None)' else None
+                node = clean_node_name(parts[3] if len(parts) > 3 else None)
                 cpus = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
                 
                 # Get and parse memory
@@ -618,8 +793,8 @@ class VSCodeManager(QObject):
                     job_name = parts[0]
                     job_id = parts[1]
                     status = parts[2]
-                    node = parts[3]
-                    
+                    node = clean_node_name(parts[3])
+
                     jobs.append({
                         'job_id': job_id,
                         'job_name': job_name,
@@ -658,7 +833,7 @@ class VSCodeManager(QObject):
                     # Get job status
                     job_status = self.get_job_status(job_id)
                     
-                    if not job_status or job_status.get('status') in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT']:
+                    if not job_status or is_terminal_state(job_status.get('status')):
                         # Job has ended
                         logger.info(f"Job {job_id} has ended, status: {job_status.get('status') if job_status else 'UNKNOWN'}")
                         break
@@ -720,8 +895,16 @@ class VSCodeManager(QObject):
             # Configuration file path
             config_file = os.path.join(ssh_dir, "config")
 
-            # Configuration to add (with marked comments for later removal)
-            hostname = config.get('hostname')
+            # Never write a hostname we can't vouch for: one malformed directive
+            # makes OpenSSH abort the ENTIRE config, taking every unrelated host
+            # the user has with it.
+            hostname = clean_node_name(config.get('hostname'))
+            if not hostname:
+                logger.warning("refusing to write SSH config for job %s: "
+                               "no valid node name (got %r)",
+                               job_id, config.get('hostname'))
+                return
+            port = clean_port(config.get('port'))
             
             # Find corresponding SSH key file path
             identity_file = self.key_path
@@ -737,6 +920,10 @@ class VSCodeManager(QObject):
             # If still no key path found, use default path
             if not identity_file:
                 identity_file = os.path.expanduser(f"~/.ssh/{self.username}_hpc_app_key")
+            # Normalise separators and quote it: on Windows this is an absolute path
+            # like C:\Users\Jo Smith\.ssh\key, and an unquoted space would make
+            # OpenSSH read "Smith\.ssh\key" as extra arguments and reject the file.
+            identity_file = os.path.normpath(identity_file)
             
             # Construct jump host name (unique identifier)
             jump_host = f"hpc_login_{job_id}"
@@ -752,14 +939,14 @@ class VSCodeManager(QObject):
 Host {jump_host}
     HostName {self.hostname}
     User {self.username}
-    IdentityFile {identity_file}
+    IdentityFile "{identity_file}"
 
 
 Host {hostname}
     HostName {hostname}
     User {self.username}
-    Port {config.get('port')}
-    IdentityFile {identity_file}
+    Port {port}
+    IdentityFile "{identity_file}"
     ProxyJump {jump_host}
     StrictHostKeyChecking accept-new
 # === END HPC3 Launcher VSCode (JobID: {job_id}) ===
@@ -769,8 +956,7 @@ Host {hostname}
             with _SSH_CONFIG_LOCK:
                 existing_config = ""
                 if os.path.exists(config_file):
-                    with open(config_file, 'r') as f:
-                        existing_config = f.read()
+                    existing_config = _read_ssh_config(config_file)
                 # Remove only THIS job's previous block, then append the fresh one.
                 # (The bug was calling _config_block_re() with no job_id: its default
                 # `.*?` matched EVERY session, so writing one session's block deleted
@@ -787,11 +973,15 @@ Host {hostname}
                 existing_config, stale = strip_blocks_for_node(existing_config, hostname)
                 if stale:
                     logger.info(f"Removed {stale} stale SSH config block(s) for node {hostname}")
-                with open(config_file, 'w') as f:
-                    if existing_config.strip():
-                        f.write(existing_config.rstrip() + "\n")
-                    f.write(new_config)
-                os.chmod(config_file, 0o600)
+                # And clear out any block an older build left malformed, so a fresh
+                # session heals a config that ssh currently refuses to read at all.
+                existing_config, dropped = prune_broken_blocks(existing_config)
+                for line in dropped:
+                    logger.warning("removed malformed SSH config line: %r", line)
+                text = ""
+                if existing_config.strip():
+                    text = existing_config.rstrip() + "\n"
+                _write_ssh_config(config_file, text + new_config)
 
             # Compute nodes rotate their SSH host key every job but reuse the node
             # name, so a previous job's key lingers and makes StrictHostKeyChecking
@@ -821,7 +1011,8 @@ Host {hostname}
         for target in targets:
             try:
                 subprocess.run(["ssh-keygen", "-R", target],
-                               capture_output=True, timeout=10, check=False)
+                               capture_output=True, timeout=10, check=False,
+                               **_NO_WINDOW)
             except Exception as e:
                 logger.warning(f"Could not clear stale host key for {target}: {e}")
 
@@ -830,7 +1021,7 @@ Host {hostname}
         block exists (idempotent, job-specific). Lets the UI heal a missing block
         just by selecting the session, and returns the parsed config for display."""
         config = self._parse_vscode_config(job_id)
-        if config and config.get('hostname'):
+        if config and clean_node_name(config.get('hostname')):
             self._add_ssh_config_to_local(job_id, config)
             self.config_written_jobs.add(job_id)
         return config
@@ -856,12 +1047,14 @@ Host {hostname}
             pattern = _config_block_re(re.escape(str(job_id)))
             removed = False
             with _SSH_CONFIG_LOCK:
-                with open(config_file, 'r') as f:
-                    existing_config = f.read()
-                if pattern.search(existing_config):
-                    with open(config_file, 'w') as f:
-                        f.write(pattern.sub('', existing_config))
-                    removed = True
+                existing_config = _read_ssh_config(config_file)
+                new_text = pattern.sub('', existing_config)
+                new_text, dropped = prune_broken_blocks(new_text)
+                for line in dropped:
+                    logger.warning("removed malformed SSH config line: %r", line)
+                if new_text != existing_config:
+                    _write_ssh_config(config_file, new_text)
+                    removed = bool(pattern.search(existing_config))
 
             if removed:
                 logger.info(f"SSH configuration for job {job_id} removed from {config_file}")

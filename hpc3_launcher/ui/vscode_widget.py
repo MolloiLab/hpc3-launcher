@@ -10,7 +10,7 @@ from PyQt5.QtGui import QFont, QIcon
 
 import logging
 import time
-from modules.vscode_helper import VSCodeManager
+from modules.vscode_helper import VSCodeManager, is_terminal_state
 from modules.auth import HPC_SERVER, get_all_existing_users
 from modules.balance import BalanceManager
 from modules.node_status import NodeStatusManager
@@ -206,7 +206,10 @@ class VSCodeWidget(QWidget):
         if not jid:
             return
         status = info.get('status')
-        if status in ('COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT'):
+        # is_terminal_state, not `in (...)`: sacct reports "CANCELLED by 3012547",
+        # which never matched, so dead sessions stayed in the table -- and selecting
+        # one wrote its (nonexistent) node into ~/.ssh/config.
+        if is_terminal_state(status):
             self.sessions.pop(jid, None)
             if self.selected_job_id == jid:
                 self.selected_job_id = None
