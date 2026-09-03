@@ -5,14 +5,13 @@ import io
 import re
 import logging
 import paramiko
-import shlex
 import threading
 import time
 import os
 import subprocess
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, Qt
 from modules.hpc3_constraints import partition_for, account_family
-from modules.ssh_config_blocks import strip_blocks_for_node
+from modules.ssh_config_blocks import prune_broken_blocks, strip_blocks_for_node
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -106,67 +105,6 @@ def normalize_job_state(state):
 def is_terminal_state(state):
     """True if the job has finished. Handles sacct's "CANCELLED by <uid>" form."""
     return normalize_job_state(state) in _TERMINAL_STATES
-
-
-# --- Healing a config we may already have broken -------------------------------
-
-def _directive_token_count(line):
-    """Number of tokens in an ssh_config directive, honouring quoted arguments.
-
-    ``posix=False`` keeps Windows backslashes intact, so
-    ``IdentityFile "C:\\Users\\Jo Smith\\.ssh\\key"`` counts as two tokens, not four.
-    Unbalanced quotes return -1: also broken, also must go.
-    """
-    try:
-        return len(shlex.split(line, posix=False))
-    except ValueError:
-        return -1
-
-
-# The only directives this app ever writes. A block containing anything else is
-# not purely ours -- most likely the regex over-matched because an END marker went
-# missing -- so we leave it alone rather than risk deleting the user's own config.
-_OUR_DIRECTIVES = {
-    "host", "hostname", "user", "port", "identityfile", "proxyjump",
-    "stricthostkeychecking", "userknownhostsfile",
-}
-
-
-def prune_broken_blocks(text):
-    """Drop any of *our* managed blocks that OpenSSH would refuse to parse.
-
-    Installs in the wild already have `HostName None assigned` on disk, and one bad
-    line makes ssh abandon the whole file -- so it isn't enough to stop writing bad
-    blocks, the app has to clean up the ones it already wrote.
-
-    Every directive we emit is ``Keyword SingleArgument``, so a block of purely our
-    keywords containing anything else is ours and is malformed. Deliberately
-    conservative in the other direction: a block mentioning a keyword we never write
-    is left untouched, because a user's legitimate ``Host dev prod staging`` also has
-    three tokens and must never be collateral damage.
-
-    Returns ``(text, dropped_lines)``.
-    """
-    dropped = []
-
-    def _maybe_drop(match):
-        block = match.group(0)
-        directives = []
-        for line in block.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            keyword = stripped.split(None, 1)[0].rstrip("=").lower()
-            if keyword not in _OUR_DIRECTIVES:
-                return block  # not purely ours -- hands off
-            directives.append(stripped)
-        for stripped in directives:
-            if _directive_token_count(stripped) != 2:
-                dropped.append(stripped)
-                return ""
-        return block
-
-    return _config_block_re().sub(_maybe_drop, text), dropped
 
 
 def _read_ssh_config(path):

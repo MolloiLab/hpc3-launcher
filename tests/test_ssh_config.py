@@ -29,9 +29,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "hpc3_launcher"))
 
+from modules.ssh_config_blocks import prune_broken_blocks  # noqa: E402
 from modules.vscode_helper import (  # noqa: E402
     _NO_WINDOW, VSCodeManager, clean_node_name, clean_port, is_terminal_state,
-    normalize_job_state, prune_broken_blocks,
+    normalize_job_state,
 )
 
 SSH = shutil.which("ssh")
