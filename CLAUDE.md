@@ -15,7 +15,7 @@ HPC3 Launcher is a PyQt5-based desktop application that provides a graphical int
 conda env create -f scripts/environment.yml
 
 # Activate environment
-conda activate hpc_env
+conda activate hpc-mgmt
 ```
 
 ### Using pip
@@ -35,7 +35,7 @@ python hpc3_launcher/main.py
 ### Development Build (macOS)
 
 ```bash
-# One-click build script (uses conda environment hpc_env)
+# One-click build script (uses conda environment hpc-mgmt)
 ./build_app.sh
 
 # This script:
@@ -49,7 +49,7 @@ python hpc3_launcher/main.py
 
 ```bash
 # Activate conda environment first
-conda activate hpc_env
+conda activate hpc-mgmt
 
 # Run the build script
 cd scripts && bash direct_build.sh && cd ..
@@ -72,9 +72,20 @@ The application follows a modular architecture with separation between business 
 **Core Directory Layout:**
 - `hpc3_launcher/` - Main application package
   - `main.py` - Application entry point with MainWindow class
+  - `core/` - SSH plumbing shared by everything else (see below)
   - `modules/` - Business logic and backend functionality
   - `ui/` - PyQt5 widget components for each feature
   - `resources/` - Icons and assets
+- `formal/` - TLA+ model of the concurrent `~/.ssh/config` edit; `formal/check.sh`
+
+### `hpc3_launcher/core/`
+
+- **ssh_session.py** - all SSH plumbing, and the source of truth for `HPC_SERVER`,
+  `SSH_DIR` and the `_hpc_app_key` naming convention (`modules/auth.py` re-exports them)
+  - `HPCSession` - a pooled, key-based paramiko connection
+  - `SSHWorker` - a QThread every slow operation runs inside. **Nothing that touches
+    the network may run on the Qt UI thread**; doing so freezes the window.
+  - `SSHError` carries an actionable `.hint` for the UI
 
 ### Key Modules (`hpc3_launcher/modules/`)
 
@@ -104,6 +115,15 @@ The application follows a modular architecture with separation between business 
   - Downloads and applies platform-specific installers (.dmg, .exe, .deb)
   - Uses `UpdateWorker` QThread for async update checks
   - Current version defined in `VERSION` constant
+
+- **ssh_config_blocks.py** - arithmetic on the launcher's own blocks in `~/.ssh/config`
+  - Deliberately free of PyQt and app state, so it can be unit tested on its own
+  - Its block regex backreferences the job id, so a match can never run from one
+    block's BEGIN to a different block's END
+  - `strip_blocks_for_node()` drops blocks for a node whose job has ended;
+    `prune_broken_blocks()` drops blocks OpenSSH would refuse to parse
+  - **Anything written here can break every SSH host the user has**: OpenSSH abandons
+    the whole file on one bad directive, so never interpolate an unvalidated value
 
 - **ssh_key_uploader.py** - SSH key generation and upload to HPC
   - Uses pexpect for interactive SSH sessions
@@ -137,7 +157,8 @@ Each widget corresponds to a page in the main application sidebar:
    - Auto-checks for updates 3 seconds after startup
 
 3. **SSH Key Management**:
-   - Keys are generated with fixed passphrase: `"create_key_for_hpc_app"`
+   - Keys are **ed25519 and passphraseless** — that is what makes later logins
+     non-interactive. (An older version used RSA-4096 with a hardcoded passphrase.)
    - Stored as: `~/.ssh/{username}_hpc_app_key` and `~/.ssh/{username}_hpc_app_key.pub`
    - Keys persist across sessions for password-less authentication
    - Users can delete keys via `auth.delete_user_key()`
@@ -165,23 +186,24 @@ python -m PyInstaller --name="HPC3-Launcher" \
 
 ### Version Management
 
-The application version is defined in `hpc3_launcher/modules/updater.py`:
+**Do not edit the version by hand, and do not create tags by hand.** release-please
+owns both. The version lives in `hpc3_launcher/modules/updater.py` on a line marked
+`# x-release-please-version`, mirrored in `.release-please-manifest.json`; editing
+either by hand desynchronises them.
 
 ```python
-VERSION = "0.0.2"  # Update this for new releases
-GITHUB_REPO = "Dale-Black/UCI-ClusterManager"  # Your GitHub repository
+VERSION = "X.Y.Z"  # x-release-please-version   <- release-please rewrites this line
+GITHUB_REPO = "MolloiLab/hpc3-launcher"  # update checks + releases
 ```
 
-**To release a new version:**
-1. Update `VERSION` in `hpc3_launcher/modules/updater.py` (e.g., from "0.0.2" to "0.0.3")
-2. Create a release notes file: `RELEASE_NOTES_v{VERSION}.md` (e.g., `RELEASE_NOTES_v0.0.3.md`)
-3. Commit all changes to git
-4. Create and push a git tag: `git tag v{VERSION} && git push origin v{VERSION}`
-5. GitHub Actions will automatically:
-   - Build for macOS, Windows, and Linux
-   - Create a GitHub release
-   - Upload all installers as release assets
-6. Users will be notified of the update within the application
+**To release:** write [Conventional Commits](https://www.conventionalcommits.org/)
+(`feat:`, `fix:`, …) and merge them to `main`. release-please keeps a "Release PR"
+open that bumps the version and updates `CHANGELOG.md`. Merging that PR tags
+`vX.Y.Z`, publishes the release, and dispatches `release.yml`, which builds the
+macOS `.dmg`, Windows `setup.exe` and Linux `.deb`, launch-tests each published
+installer on its own OS, and appends the install guide to the release notes.
+
+There are no hand-written `RELEASE_NOTES_*.md` files; `CHANGELOG.md` is generated.
 
 ## Dependencies
 
@@ -195,7 +217,8 @@ Key dependencies from `requirements.txt`:
 
 ## HPC Server Configuration
 
-The HPC server hostname is defined as a constant in `hpc3_launcher/modules/auth.py`:
+The HPC server hostname is defined as a constant in `hpc3_launcher/core/ssh_session.py`
+(and re-exported by `modules/auth.py`):
 
 ```python
 HPC_SERVER = 'hpc3.rcic.uci.edu'
@@ -203,12 +226,26 @@ HPC_SERVER = 'hpc3.rcic.uci.edu'
 
 ## Testing
 
-Test files are located in `tests/` directory:
-- `tests/test_environment.py` - Environment and dependency checks
-
-To run tests:
 ```bash
-python -m pytest tests/
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+- `tests/test_ssh_config.py` — the `~/.ssh/config` writer: Slurm value cleaning,
+  job-state normalisation, block pruning, and end-to-end writes. Several tests shell
+  out to the **real `ssh -G`** rather than trusting our own idea of valid syntax.
+- `tests/test_ssh_config_blocks.py` — block arithmetic in `modules/ssh_config_blocks.py`.
+- `tests/test_environment.py` — a dependency-check script, not a unittest module.
+
+CI runs this suite on **ubuntu, macOS and Windows**. The Windows job matters: the
+config this app writes is parsed by Windows' own OpenSSH, and bugs have shipped that
+only manifest there. `HPC3_REQUIRE_SSH=1` makes a missing `ssh` a hard failure rather
+than a silent skip.
+
+`main.py` also supports a headless smoke test used by CI:
+
+```bash
+HPC3_SMOKE_TEST=1 HPC3_SMOKE_MARKER=/tmp/marker.txt QT_QPA_PLATFORM=offscreen \
+  python hpc3_launcher/main.py
 ```
 
 ## License

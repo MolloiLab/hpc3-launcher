@@ -18,7 +18,7 @@ There are many ways to contribute to the project:
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.11 (what CI builds and tests with)
 - PyQt5
 - Git
 
@@ -26,8 +26,8 @@ There are many ways to contribute to the project:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/songliangyu/UCI-ClusterManager.git
-   cd UCI-ClusterManager
+   git clone https://github.com/MolloiLab/hpc3-launcher.git
+   cd hpc3-launcher
    ```
 
 2. Install dependencies:
