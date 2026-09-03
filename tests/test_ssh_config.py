@@ -8,8 +8,15 @@ and wrote ``HostName None assigned`` into the user's config, which OpenSSH rejec
 with "keyword hostname extra arguments at end of line" -- and then *terminates*,
 abandoning the whole file, so every host the user had stopped resolving.
 
-Where OpenSSH is available these tests check the generated config against the real
-``ssh -G`` parser rather than trusting our own idea of what is valid.
+These are written to be meaningful on Windows, not merely to pass there:
+
+  * the fake HOME contains a space ("Jo Smith"), so every writer test exercises the
+    quoted-IdentityFile path that an unquoted `C:\\Users\\Jo Smith\\...` would break;
+  * configs are checked against the *real* ``ssh`` on the machine running the tests,
+    so Windows CI judges them with Windows' own OpenSSH parser;
+  * we look for OpenSSH's parse complaints rather than a non-zero exit, because on
+    Windows ssh.exe may also object to a temp file's ACLs -- which would otherwise
+    turn into a false pass (a bad config "failing" for the wrong reason).
 """
 
 import os
@@ -23,25 +30,44 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "hpc3_launcher"))
 
 from modules.vscode_helper import (  # noqa: E402
-    VSCodeManager, clean_node_name, clean_port, is_terminal_state,
+    _NO_WINDOW, VSCodeManager, clean_node_name, clean_port, is_terminal_state,
     normalize_job_state, prune_broken_blocks,
 )
 
 SSH = shutil.which("ssh")
+SSH_KEYGEN = shutil.which("ssh-keygen")
+ON_WINDOWS = os.name == "nt"
+
+# CI sets this. Without it a runner missing ssh would quietly skip every test
+# that uses the real parser, and the suite would still go green -- the exact
+# shape of "tested" that lets a bug like this one come back.
+REQUIRE_SSH = os.environ.get("HPC3_REQUIRE_SSH") == "1"
+
+# What OpenSSH says when it refuses a config file. "extra arguments" is the exact
+# failure this module exists to prevent.
+_PARSE_COMPLAINTS = (
+    "extra arguments", "bad configuration option", "garbage at end of line",
+    "missing argument", "terminating,",
+)
 
 
-def ssh_parses(config_text):
-    """(ok, stderr) from asking the real OpenSSH client to parse a config file."""
-    with tempfile.NamedTemporaryFile("w", suffix="_config", delete=False) as handle:
-        handle.write(config_text)
-        path = handle.name
+def ssh_config_error(config_text):
+    """Hand a config to the real ssh client; return its parse complaint, or None."""
+    handle = tempfile.NamedTemporaryFile("w", suffix="_config", delete=False,
+                                         newline="")
     try:
-        os.chmod(path, 0o600)
-        proc = subprocess.run([SSH, "-F", path, "-G", "example-host"],
+        handle.write(config_text)
+        handle.close()
+        os.chmod(handle.name, 0o600)
+        proc = subprocess.run([SSH, "-F", handle.name, "-G", "example-host"],
                               capture_output=True, text=True)
-        return proc.returncode == 0, proc.stderr
+        stderr = proc.stderr or ""
+        for line in stderr.splitlines():
+            if any(marker in line for marker in _PARSE_COMPLAINTS):
+                return stderr.strip()
+        return None
     finally:
-        os.unlink(path)
+        os.unlink(handle.name)
 
 
 class TestSlurmValueCleaning(unittest.TestCase):
@@ -170,51 +196,66 @@ class TestPruneBrokenBlocks(unittest.TestCase):
 
 @unittest.skipIf(SSH is None, "no ssh client available")
 class TestAgainstRealOpenSSH(unittest.TestCase):
+    """Judged by whichever OpenSSH is installed -- on Windows CI, Windows' own."""
+
     def test_the_reported_config_really_is_rejected(self):
         """Guards the premise: this is the failure the user hit."""
-        ok, stderr = ssh_parses(USER_BLOCK + BROKEN_BLOCK)
-        self.assertFalse(ok)
-        self.assertIn("extra arguments", stderr)
+        error = ssh_config_error(USER_BLOCK + BROKEN_BLOCK)
+        self.assertIsNotNone(error)
+        self.assertIn("extra arguments", error)
 
     def test_pruning_makes_it_parseable_again(self):
         cleaned, _ = prune_broken_blocks(USER_BLOCK + BROKEN_BLOCK + GOOD_BLOCK)
-        ok, stderr = ssh_parses(cleaned)
-        self.assertTrue(ok, stderr)
+        self.assertIsNone(ssh_config_error(cleaned))
 
     def test_a_windows_path_with_a_space_parses(self):
-        ok, stderr = ssh_parses(GOOD_BLOCK)
-        self.assertTrue(ok, stderr)
+        self.assertIsNone(ssh_config_error(GOOD_BLOCK))
 
     def test_unquoted_windows_path_with_a_space_would_have_broken_it(self):
         """Why IdentityFile is quoted: the unquoted form is a latent Windows bug."""
-        ok, stderr = ssh_parses(GOOD_BLOCK.replace('"', ''))
-        self.assertFalse(ok)
-        self.assertIn("extra arguments", stderr)
+        error = ssh_config_error(GOOD_BLOCK.replace('"', ''))
+        self.assertIsNotNone(error)
+        self.assertIn("extra arguments", error)
 
 
 class TestWriterRefusesBadInput(unittest.TestCase):
-    """End-to-end: the manager must never put an unusable node in the config."""
+    """End-to-end through the real writer, with a home directory whose name has a
+    space -- so the quoting fix is exercised on every platform, and on Windows CI
+    against a genuine `C:\\...\\Jo Smith\\...` path."""
 
     def setUp(self):
-        self.home = tempfile.mkdtemp()
-        self.real_home = os.environ.get("HOME")
+        self._saved_env = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+        self._tmp = tempfile.mkdtemp()
+        self.home = os.path.join(self._tmp, "Jo Smith")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+        # ntpath.expanduser reads USERPROFILE, posixpath reads HOME. Set both so the
+        # test drives the same code path on every OS.
         os.environ["HOME"] = self.home
         os.environ["USERPROFILE"] = self.home
-        os.makedirs(os.path.join(self.home, ".ssh"), mode=0o700)
         self.config = os.path.join(self.home, ".ssh", "config")
-        self.manager = VSCodeManager(hostname="hpc3.rcic.uci.edu", username="jinx19",
-                                     key_path=os.path.join(self.home, ".ssh", "k"))
+        self.manager = VSCodeManager(
+            hostname="hpc3.rcic.uci.edu", username="jinx19",
+            key_path=os.path.join(self.home, ".ssh", "jinx19_hpc_app_key"))
 
     def tearDown(self):
-        if self.real_home is not None:
-            os.environ["HOME"] = self.real_home
-        shutil.rmtree(self.home, ignore_errors=True)
+        # Restore BOTH, and unset any we invented -- leaking USERPROFILE would
+        # corrupt every later test on Windows.
+        for key, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self._tmp, ignore_errors=True)
 
     def read(self):
         if not os.path.exists(self.config):
             return ""
         with open(self.config) as handle:
             return handle.read()
+
+    def assertConfigParses(self):
+        if SSH:
+            self.assertIsNone(ssh_config_error(self.read()))
 
     def test_none_assigned_is_never_written(self):
         self.manager._add_ssh_config_to_local("55726278",
@@ -224,16 +265,25 @@ class TestWriterRefusesBadInput(unittest.TestCase):
     def test_a_real_node_is_written_and_parses(self):
         self.manager._add_ssh_config_to_local("55726259",
                                               {"hostname": "hpc3-gpu-n54-01", "port": "22"})
+        self.assertIn("Host hpc3-gpu-n54-01", self.read())
+        self.assertConfigParses()
+
+    def test_the_identity_path_with_a_space_is_quoted(self):
+        """The latent Windows bug: an unquoted C:\\Users\\Jo Smith\\... is fatal."""
+        self.manager._add_ssh_config_to_local("55726259",
+                                              {"hostname": "hpc3-gpu-n54-01", "port": "22"})
         text = self.read()
-        self.assertIn("Host hpc3-gpu-n54-01", text)
-        if SSH:
-            ok, stderr = ssh_parses(text)
-            self.assertTrue(ok, stderr)
+        self.assertIn("Jo Smith", text)
+        for line in text.splitlines():
+            if line.strip().startswith("IdentityFile"):
+                self.assertRegex(line.strip(), r'^IdentityFile "[^"]+"$')
+        self.assertConfigParses()
 
     def test_a_bogus_port_falls_back_to_22(self):
         self.manager._add_ssh_config_to_local("55726260",
                                               {"hostname": "hpc3-gpu-n54-02", "port": None})
         self.assertIn("Port 22", self.read())
+        self.assertConfigParses()
 
     def test_writing_a_new_session_heals_a_config_broken_by_an_older_build(self):
         with open(self.config, "w") as handle:
@@ -244,17 +294,15 @@ class TestWriterRefusesBadInput(unittest.TestCase):
         self.assertNotIn("None assigned", text)
         self.assertIn("Host my-own-server", text)
         self.assertIn("Host hpc3-gpu-n54-01", text)
-        if SSH:
-            ok, stderr = ssh_parses(text)
-            self.assertTrue(ok, stderr)
+        self.assertConfigParses()
 
     def test_startup_repair_heals_without_launching_anything(self):
         with open(self.config, "w") as handle:
             handle.write(USER_BLOCK + BROKEN_BLOCK)
-        dropped = self.manager.repair_local_ssh_config()
-        self.assertEqual(dropped, 1)
+        self.assertEqual(self.manager.repair_local_ssh_config(), 1)
         self.assertNotIn("None assigned", self.read())
         self.assertIn("Host my-own-server", self.read())
+        self.assertConfigParses()
 
     def test_repair_is_idempotent_and_leaves_clean_configs_alone(self):
         with open(self.config, "w") as handle:
@@ -262,6 +310,49 @@ class TestWriterRefusesBadInput(unittest.TestCase):
         before = self.read()
         self.assertEqual(self.manager.repair_local_ssh_config(), 0)
         self.assertEqual(self.read(), before)
+
+    def test_removing_one_session_leaves_the_others(self):
+        for job, node in (("1", "hpc3-gpu-n54-01"), ("2", "hpc3-gpu-n54-02")):
+            self.manager._add_ssh_config_to_local(job, {"hostname": node, "port": "22"})
+        self.manager._remove_ssh_config_from_local("1")
+        text = self.read()
+        self.assertNotIn("hpc3-gpu-n54-01", text)
+        self.assertIn("hpc3-gpu-n54-02", text)
+        self.assertConfigParses()
+
+
+class TestWindowsSubprocessFlags(unittest.TestCase):
+    """The --windowed build must not flash a console. CREATE_NO_WINDOW is a real
+    Windows flag: if the value were wrong, subprocess would raise at call time --
+    which only Windows CI can actually discover."""
+
+    def test_no_window_is_only_populated_on_windows(self):
+        self.assertEqual(bool(_NO_WINDOW), ON_WINDOWS)
+
+    def test_a_subprocess_accepts_the_flags(self):
+        proc = subprocess.run([sys.executable, "-c", "print('ok')"],
+                              capture_output=True, text=True, **_NO_WINDOW)
+        self.assertEqual(proc.stdout.strip(), "ok")
+
+    @unittest.skipIf(SSH_KEYGEN is None, "no ssh-keygen available")
+    def test_clearing_a_stale_host_key_never_raises(self):
+        manager = VSCodeManager(hostname="hpc3.rcic.uci.edu", username="jinx19",
+                                key_path=None)
+        manager._clear_stale_host_key("hpc3-gpu-n54-01", "22")  # must not raise
+
+
+class TestCoverageGuards(unittest.TestCase):
+    """Fails, rather than skips, when CI is missing the tools it promised to use."""
+
+    @unittest.skipUnless(REQUIRE_SSH, "only enforced when HPC3_REQUIRE_SSH=1")
+    def test_a_real_ssh_client_is_present(self):
+        self.assertIsNotNone(
+            SSH, "no ssh on PATH: every OpenSSH parser test would silently skip")
+
+    @unittest.skipUnless(REQUIRE_SSH, "only enforced when HPC3_REQUIRE_SSH=1")
+    def test_ssh_keygen_is_present(self):
+        self.assertIsNotNone(
+            SSH_KEYGEN, "no ssh-keygen on PATH: the host-key test would skip")
 
 
 if __name__ == "__main__":
