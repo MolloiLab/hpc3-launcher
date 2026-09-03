@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/MolloiLab/hpc3-launcher/compare/v0.3.1...v0.3.2) (2026-09-03)
+
+
+### Bug Fixes
+
+* stop a cancelled VSCode session from breaking the user's entire SSH config ([#7](https://github.com/MolloiLab/hpc3-launcher/issues/7)) ([a05370f](https://github.com/MolloiLab/hpc3-launcher/commit/a05370fcff1164ada5eb85564fbcd614f151ee7f))
+
 ## [0.3.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.3.0...v0.3.1) (2026-08-22)
 
 
