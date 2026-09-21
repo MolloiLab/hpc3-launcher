@@ -89,6 +89,40 @@ def clean_node_name(value):
     return node
 
 
+def clean_exclude_list(values):
+    """Validate the nodes for ``sbatch --exclude``; return them de-duplicated, in order.
+
+    Raises ValueError on anything that isn't a node name instead of dropping it:
+    the list is interpolated into a shell command, and silently losing an
+    exclusion would put the user straight back on the node they were avoiding.
+    """
+    nodes = []
+    for value in values or []:
+        node = clean_node_name(value)
+        if node is None:
+            raise ValueError(f"Not a valid node name to exclude: {value!r}")
+        if node not in nodes:
+            nodes.append(node)
+    return nodes
+
+
+def parse_sinfo_nodes(output):
+    """Parse ``sinfo -h -N -o '%N|%P|%T'`` into {partition: [(node, state), ...]}."""
+    partitions = {}
+    for line in (output or "").splitlines():
+        parts = line.strip().split("|")
+        if len(parts) != 3:
+            continue
+        node = clean_node_name(parts[0])
+        partition = parts[1].strip().rstrip("*")  # "*" marks the default partition
+        if node is None or not partition:
+            continue
+        entries = partitions.setdefault(partition, [])
+        if all(node != n for n, _ in entries):
+            entries.append((node, parts[2].strip().lower()))
+    return partitions
+
+
 def clean_port(value, default="22"):
     """Return a valid TCP port as a string, falling back to ``default``."""
     port = str(value if value is not None else "").strip()
@@ -295,7 +329,7 @@ class VSCodeManager(QObject):
             self.connect_ssh()
             raise Exception(f"Command execution failed: {str(e)}")
     
-    def submit_vscode_job(self, cpus=2, memory="4G", gpu_type=None, gpu_count=1, account=None, time_limit="2:00:00", use_free=False):
+    def submit_vscode_job(self, cpus=2, memory="4G", gpu_type=None, gpu_count=1, account=None, time_limit="2:00:00", use_free=False, exclude_nodes=None):
         """
         Submit VSCode job to HPC
 
@@ -309,13 +343,15 @@ class VSCodeManager(QObject):
             account: Billing account
             time_limit: Time limit in HH:MM:SS format
             use_free: Whether to use free resources
+            exclude_nodes: Node names Slurm must not place the job on (--exclude)
 
         Returns:
             bool: Whether the submission was successful
         """
         if not account:
             raise ValueError("Billing account must be specified")
-        
+        exclude_nodes = clean_exclude_list(exclude_nodes)  # before touching the network
+
         # Connect to SSH
         if not self.connect_ssh():
             raise Exception("Unable to connect to SSH server")
@@ -349,7 +385,11 @@ class VSCodeManager(QObject):
                 cmd += f" --gres=gpu:{gpu_count}"
             elif gpu_type is not None:  # specific model, e.g. gpu:RTX6000:1
                 cmd += f" --gres=gpu:{gpu_type}:{gpu_count}"
-            
+
+            # Keep the job off nodes the user has flagged (e.g. one with a broken GPU).
+            if exclude_nodes:
+                cmd += f" --exclude={','.join(exclude_nodes)}"
+
             # Add VSCode script path
             cmd += " /opt/rcic/scripts/vscode-sshd.sh"
             
@@ -411,6 +451,7 @@ class VSCodeManager(QObject):
                 'time_limit': time_limit,
                 'submit_time': time.time(),
                 'use_free': use_free,  # Record whether free resources are used
+                'exclude_nodes': exclude_nodes,
                 'command': cmd,  # Record submission command
                 'script_path': "/opt/rcic/scripts/vscode-sshd.sh"  # Use system script path
             }
@@ -745,6 +786,19 @@ class VSCodeManager(QObject):
             logger.error(f"Error getting VSCode jobs: {str(e)}")
             return []
     
+    def get_partition_nodes(self):
+        """
+        List every node per partition, for the "Exclude Nodes" picker
+
+        Returns:
+            dict: {partition: [(node, state), ...]}; empty if sinfo failed
+        """
+        try:
+            return parse_sinfo_nodes(self.execute_ssh_command("sinfo -h -N -o '%N|%P|%T'"))
+        except Exception as e:
+            logger.error(f"Error listing partition nodes: {str(e)}")
+            return {}
+
     def __del__(self):
         """Destructor to ensure SSH connection is closed"""
         if hasattr(self, '_ssh_client') and self._ssh_client:
