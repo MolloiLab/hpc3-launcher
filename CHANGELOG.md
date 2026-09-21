@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.3.2...v0.4.0) (2026-09-21)
+
+
+### Features
+
+* let a VSCode session exclude nodes (sbatch --exclude) ([#10](https://github.com/MolloiLab/hpc3-launcher/issues/10)) ([3347b48](https://github.com/MolloiLab/hpc3-launcher/commit/3347b48676c3147120c6d85417bc37956d405c02))
+
 ## [0.3.2](https://github.com/MolloiLab/hpc3-launcher/compare/v0.3.1...v0.3.2) (2026-09-03)
 
 
