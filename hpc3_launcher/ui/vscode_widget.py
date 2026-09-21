@@ -17,6 +17,7 @@ from modules.node_status import NodeStatusManager
 from modules import hpc3_constraints as hc
 from core.ssh_session import SSHWorker
 from ui.status_view import LiveStatusView
+from ui.checkable_combo import CheckableComboBox
 import os
 
 # Configure logging
@@ -42,6 +43,10 @@ class VSCodeWidget(QWidget):
         # Multiple sessions can run at once; the table below lists them all.
         self.sessions = {}
         self.selected_job_id = None
+
+        # {partition: [(node, state)]} from sinfo, for the "Exclude Nodes" picker.
+        self.partition_nodes = {}
+        self._exclude_items = None
 
         # Pending submit config; guard to suppress reentrant combo signals.
         self._pending_submit = None
@@ -151,7 +156,9 @@ class VSCodeWidget(QWidget):
                          'available': a['available']} for a in balance['accounts']]
         rep.state("checking", "looking for a running VSCode session")
         running = self.vscode_manager.get_running_vscode_jobs()
-        return {'accounts': accounts, 'running': running}
+        rep.state("loading", "listing cluster nodes")
+        nodes = self.vscode_manager.get_partition_nodes()  # {} on failure; picker degrades
+        return {'accounts': accounts, 'running': running, 'nodes': nodes}
 
     def _on_init_failed(self, message, hint=""):
         self.status_view.finish_error(message, hint)
@@ -159,6 +166,7 @@ class VSCodeWidget(QWidget):
 
     def _on_options_loaded(self, data):
         self.accounts = data['accounts']
+        self.partition_nodes = data.get('nodes') or {}
         self._populate_account_combo()
         self._rebuild_gpu_options()
         self._apply_cascade()
@@ -246,6 +254,7 @@ class VSCodeWidget(QWidget):
                 self.sessions_table.selectRow(row)
         self.sessions_table.blockSignals(False)
         self.cancel_btn.setEnabled(self.selected_job_id in self.sessions)
+        self._rebuild_exclude_options()  # a session's node may have just appeared
         n = len(self.sessions)
         self.sessions_label.setText(f"Running VSCode sessions: {n}" if n else
                                     "Running VSCode sessions: none yet")
@@ -299,6 +308,8 @@ class VSCodeWidget(QWidget):
         lines.append(f"Run Time Limit: {info.get('time_limit', 'N/A')}")
         if 'use_free' in info:
             lines.append(f"Use Free Resources: {'Yes' if info['use_free'] else 'No'}")
+        if info.get('exclude_nodes'):
+            lines.append(f"Excluded Nodes: {', '.join(info['exclude_nodes'])}")
         if 'submit_time' in info:
             lines.append("\nSubmitted: " +
                          time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(info['submit_time'])))
@@ -427,6 +438,15 @@ class VSCodeWidget(QWidget):
         free_option_hint.setStyleSheet("color: #888; font-size: 10px;")
         free_option_hint.setWordWrap(True)
         grid.addWidget(free_option_hint, row, 0, 1, 2)
+        row += 1
+
+        # 8. Exclude Nodes -- tick any node Slurm should keep the job off (sbatch
+        #    --exclude), e.g. one whose GPU is broken. Your own sessions' nodes are
+        #    listed first, so "not that node again" is two clicks.
+        grid.addWidget(QLabel("Exclude Nodes:"), row, 0)
+        self.exclude_combo = CheckableComboBox(empty_text="None — any node")
+        self.exclude_combo.checked_changed.connect(self.on_exclude_changed)
+        grid.addWidget(self.exclude_combo, row, 1)
 
         config_layout.addWidget(config_group)
         
@@ -546,6 +566,43 @@ class VSCodeWidget(QWidget):
             return
         self._apply_cascade()
 
+    def on_exclude_changed(self):
+        # Status line only -- nothing else depends on the exclusions, and rebuilding
+        # the picker's rows from inside its own click would disturb the open popup.
+        self._update_status_line()
+
+    def _rebuild_exclude_options(self):
+        """Repopulate the exclude picker: your sessions' nodes first, then the rest
+        of the partition the form currently targets. Ticked nodes always stay listed
+        (even after switching partition) so an exclusion can never be hidden."""
+        checked = self.exclude_combo.checked_values()
+        items, seen = [], set()
+
+        def add(node, note=""):
+            if node and node not in seen:
+                seen.add(node)
+                items.append((f"{node}{note}", node))
+
+        for jid, info in sorted(self.sessions.items()):
+            node = info.get('node')
+            if node and node != 'Unknown':
+                add(node, f"  — your job {jid}")
+        account = self.account_combo.currentData()
+        if account is not None:
+            part = hc.partition_for(account, self.gpu_combo.currentData(),
+                                    bool(self.free_option_check.currentData()))
+            for node, state in self.partition_nodes.get(part, []):
+                add(node, "" if state in ("idle", "mixed", "allocated") else f"  ({state})")
+        for node in checked:
+            add(node)
+        # Session polling lands here every few seconds: leave the rows alone when
+        # nothing changed, and never swap them out from under an open popup.
+        if items == self._exclude_items or self.exclude_combo.view().isVisible():
+            return
+        self._exclude_items = items
+        self.exclude_combo.set_items(items, checked)
+        self.exclude_combo.setEnabled(bool(items))
+
     def _rebuild_gpu_options(self):
         """Repopulate the GPU-type dropdown from the selected account's family.
 
@@ -625,21 +682,30 @@ class VSCodeWidget(QWidget):
                 self.time_combo.setCurrentIndex(best)
 
             self.submit_btn.setEnabled(valid_account)
-
-            # Status line: a one-glance summary of what will actually be requested.
-            if not valid_account:
-                self.status_label.setText("Select an account to enable submission")
-            else:
-                part = hc.partition_for(account, gpu_type, use_free)
-                if gpu_type is None:
-                    self.status_label.setText(f"CPU job → partition '{part}'")
-                elif gpu_type == hc.GPU_ANY:
-                    self.status_label.setText(f"Any GPU → partition '{part}'")
-                else:
-                    self.status_label.setText(f"{gpu_type} → partition '{part}'")
+            self._rebuild_exclude_options()  # the target partition may have changed
+            self._update_status_line()
         finally:
             self._applying = False
 
+
+    def _update_status_line(self):
+        """A one-glance summary of what will actually be requested."""
+        account = self.account_combo.currentData()
+        if account is None:
+            self.status_label.setText("Select an account to enable submission")
+            return
+        gpu_type = self.gpu_combo.currentData()
+        part = hc.partition_for(account, gpu_type, bool(self.free_option_check.currentData()))
+        if gpu_type is None:
+            text = f"CPU job → partition '{part}'"
+        elif gpu_type == hc.GPU_ANY:
+            text = f"Any GPU → partition '{part}'"
+        else:
+            text = f"{gpu_type} → partition '{part}'"
+        excluded = self.exclude_combo.checked_values()
+        if excluded:
+            text += f" · avoiding {', '.join(excluded)}"
+        self.status_label.setText(text)
 
     @pyqtSlot()
     def submit_job(self):
@@ -674,6 +740,7 @@ class VSCodeWidget(QWidget):
         self._pending_submit = dict(
             cpus=cpus, memory=memory, gpu_type=gpu_type, gpu_count=gpu_count,
             account=account, time_limit=time_limit, use_free=use_free,
+            exclude_nodes=self.exclude_combo.checked_values(),
         )
         # Each launch is independent -- multiple sessions can run at once, so we
         # don't check for (or cancel) an existing one. Just submit.

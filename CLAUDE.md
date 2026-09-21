@@ -234,6 +234,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
   job-state normalisation, block pruning, and end-to-end writes. Several tests shell
   out to the **real `ssh -G`** rather than trusting our own idea of valid syntax.
 - `tests/test_ssh_config_blocks.py` — block arithmetic in `modules/ssh_config_blocks.py`.
+- `tests/test_exclude_nodes.py` — the VSCode panel's "Exclude Nodes" option: the
+  `--exclude` list is interpolated into a shell command, so bad names must raise.
 - `tests/test_environment.py` — a dependency-check script, not a unittest module.
 
 CI runs this suite on **ubuntu, macOS and Windows**. The Windows job matters: the
