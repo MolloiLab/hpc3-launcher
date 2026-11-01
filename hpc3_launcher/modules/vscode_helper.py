@@ -11,7 +11,9 @@ import os
 import subprocess
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, Qt
 from modules.hpc3_constraints import partition_for, account_family
-from modules.ssh_config_blocks import prune_broken_blocks, strip_blocks_for_node
+from modules.ssh_config_blocks import (
+    job_ids_in, prune_broken_blocks, strip_blocks_for_node, strip_ended_jobs,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -751,41 +753,77 @@ class VSCodeManager(QObject):
             self.error_occurred.emit(error_msg)
             return False
     
+    def _list_vscode_jobs(self):
+        """Every queued vscode-sshd job of this user, PENDING ones included.
+
+        Raises when the query fails, unlike get_running_vscode_jobs: an empty list
+        from here means "no sessions", and sync_ssh_config prunes on that basis.
+        """
+        output = self.execute_ssh_command(
+            f"squeue -u {self.username} -h -n vscode-sshd -o '%i %T %N'")
+        jobs = []
+        for line in output.strip().splitlines():
+            parts = line.split()
+            if len(parts) < 2 or not parts[0].isdigit():
+                continue
+            jobs.append({
+                'job_id': parts[0],
+                'job_name': 'vscode-sshd',
+                'status': parts[1],
+                'node': clean_node_name(parts[2] if len(parts) > 2 else None),
+            })
+        return jobs
+
     def get_running_vscode_jobs(self):
         """
-        Get user's running VSCode jobs
-        
+        Get user's queued VSCode jobs
+
         Returns:
-            list: List of job information
+            list: List of job information; empty if the query failed
         """
         try:
-            cmd = f"squeue -u {self.username} -h -o '%j %i %T %N' | grep vscode-sshd"
-            output = self.execute_ssh_command(cmd)
-            
-            jobs = []
-            for line in output.strip().split('\n'):
-                if not line.strip():
-                    continue
-                
-                parts = line.split()
-                if len(parts) >= 4:
-                    job_name = parts[0]
-                    job_id = parts[1]
-                    status = parts[2]
-                    node = clean_node_name(parts[3])
-
-                    jobs.append({
-                        'job_id': job_id,
-                        'job_name': job_name,
-                        'status': status,
-                        'node': node
-                    })
-            
-            return jobs
+            return self._list_vscode_jobs()
         except Exception as e:
             logger.error(f"Error getting VSCode jobs: {str(e)}")
             return []
-    
+
+    def sync_ssh_config(self):
+        """Make ~/.ssh/config agree with the queue, and return the queued sessions.
+
+        Writes a block for every RUNNING session that lacks one and drops the block
+        of every job no longer queued. This is what keeps the config right however
+        a job got where it is: queued for hours, started while the app was closed,
+        or cancelled from the Job Management page or a terminal.
+        """
+        jobs = self._list_vscode_jobs()  # raises: never prune against a failed query
+        config_file = os.path.expanduser("~/.ssh/config")
+        present = set()
+        if os.path.exists(config_file):
+            present = set(job_ids_in(_read_ssh_config(config_file)))
+        for job in jobs:
+            if job['status'] != 'RUNNING' or job['job_id'] in present:
+                continue
+            config = self.ensure_ssh_config(job['job_id'])
+            if config:
+                job['config'] = config
+                job['hostname'] = config.get('hostname')
+                job['port'] = config.get('port')
+                self.ssh_config_added.emit(job['job_id'], config.get('hostname'))
+
+        removed = []
+        if os.path.exists(config_file):
+            with _SSH_CONFIG_LOCK:
+                existing = _read_ssh_config(config_file)
+                text, removed = strip_ended_jobs(
+                    existing, {j['job_id'] for j in jobs}, self.username)
+                if removed:
+                    _write_ssh_config(config_file, text)
+        for job_id in removed:  # outside the lock (no signal while held)
+            logger.info(f"SSH configuration for ended job {job_id} removed")
+            self.config_written_jobs.discard(job_id)
+            self.ssh_config_removed.emit(job_id)
+        return jobs
+
     def get_partition_nodes(self):
         """
         List every node per partition, for the "Exclude Nodes" picker
@@ -815,58 +853,57 @@ class VSCodeManager(QObject):
             job_id: Job ID
         """
         def poll_job():
-            """Thread function to poll job status"""
+            """Thread function to poll job status.
+
+            No overall time limit: a job can sit PENDING for hours, and the old
+            15-minute cap meant one that started later never got its SSH block.
+            Only the wait for a RUNNING job's connection details is bounded.
+            (sync_ssh_config is the backstop if this thread dies with the app.)
+            """
             try:
-                # Initialize poll count
-                poll_count = 0
-                
-                # Continuously poll until job completes or times out
+                running_polls = 0
+                failures = 0
+
                 while True:
-                    # Get job status
                     job_status = self.get_job_status(job_id)
-                    
-                    if not job_status or is_terminal_state(job_status.get('status')):
-                        # Job has ended
-                        logger.info(f"Job {job_id} has ended, status: {job_status.get('status') if job_status else 'UNKNOWN'}")
+
+                    if not job_status:
+                        # A failed query, not proof the job ended: retry a while.
+                        failures += 1
+                        if failures > 20:
+                            logger.warning(f"Giving up polling job {job_id}: status unavailable")
+                            break
+                        time.sleep(15)
+                        continue
+                    failures = 0
+
+                    if is_terminal_state(job_status.get('status')):
+                        logger.info(f"Job {job_id} has ended, status: {job_status.get('status')}")
                         break
-                    elif job_status.get('status') == 'RUNNING':
-                        # Job is running, attempt to get configuration
-                        if poll_count % 2 == 0:  # Check configuration every few polls
-                            config = self._parse_vscode_config(job_id)
-                            if config:
-                                # Update job information
-                                job_status['config'] = config
-                                
-                                # Write configuration to local SSH config (if not already written)
-                                hostname = config.get('hostname')
-                                if hostname and job_id not in self.config_written_jobs:
-                                    # Use signal to transfer operation to main thread
-                                    self._add_ssh_config_to_local(job_id, config)
-                                    # Emit signal to notify configuration added
-                                    self.ssh_config_added.emit(job_id, hostname)
-                                    # Mark configuration as written
-                                    self.config_written_jobs.add(job_id)
-                                    logger.info(f"SSH configuration for job {job_id} written (first time)")
-                                
-                                # Emit configuration ready signal
-                                self.vscode_config_ready.emit(job_status)
-                    
-                    # Emit status update signal
+
+                    if job_status.get('status') == 'RUNNING':
+                        running_polls += 1
+                        config = self._parse_vscode_config(job_id)
+                        if config and config.get('hostname'):
+                            job_status['config'] = config
+                            hostname = config['hostname']
+                            if job_id not in self.config_written_jobs:
+                                self._add_ssh_config_to_local(job_id, config)
+                                self.ssh_config_added.emit(job_id, hostname)
+                                self.config_written_jobs.add(job_id)
+                                logger.info(f"SSH configuration for job {job_id} written (first time)")
+                            self.vscode_config_ready.emit(job_status)
+                            break  # done; sync_ssh_config notices when it ends
+                        if running_polls > 180:  # 15 minutes running without connection details
+                            logger.warning(f"Job {job_id} is running but never reported its connection details")
+                            break
+
                     self.vscode_job_status_updated.emit(job_status)
-                    
-                    # Increment poll count
-                    poll_count += 1
-                    
-                    # Delay
-                    time.sleep(5)  # Poll every 5 seconds
-                    
-                    # Exit if polling exceeds a certain count
-                    if poll_count > 180:  # Exit after 15 minutes
-                        logger.warning(f"Polling job {job_id} status timed out")
-                        break
+                    # Pending can last hours: ask the scheduler less often meanwhile.
+                    time.sleep(5 if job_status.get('status') == 'RUNNING' else 15)
             except Exception as e:
                 logger.error(f"Failed to poll job status: {e}")
-        
+
         # Start thread
         threading.Thread(target=poll_job, daemon=True).start()
 

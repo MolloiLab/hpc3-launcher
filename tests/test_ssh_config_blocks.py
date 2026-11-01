@@ -17,22 +17,24 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hpc3_launcher"))
 
-from modules.ssh_config_blocks import node_of_block, strip_blocks_for_node  # noqa: E402
+from modules.ssh_config_blocks import (  # noqa: E402
+    job_ids_in, node_of_block, strip_blocks_for_node, strip_ended_jobs,
+)
 
 
-def block(job_id, node):
+def block(job_id, node, user="someone"):
     return f"""
 # === BEGIN HPC3 Launcher VSCode (JobID: {job_id}) ===
 
 Host hpc_login_{job_id}
     HostName hpc3.rcic.uci.edu
-    User someone
+    User {user}
     IdentityFile /dev/null
 
 
 Host {node}
     HostName {node}
-    User someone
+    User {user}
     Port 22
     IdentityFile /dev/null
     ProxyJump hpc_login_{job_id}
@@ -89,6 +91,46 @@ class TestStripBlocksForNode(unittest.TestCase):
         out, removed = strip_blocks_for_node(legacy, "gpu-a")
         self.assertEqual(removed, 1)
         self.assertNotIn("gpu-a", out)
+
+
+class TestStripEndedJobs(unittest.TestCase):
+    """The queue is the truth: a block whose job is no longer queued has to go.
+
+    Regression: a job that sat PENDING for 12 hours outlived the launcher's watcher
+    and never got a block, while every finished job's block stayed forever.
+    """
+
+    def test_drops_jobs_that_are_not_live(self):
+        text = block("111", "gpu-a") + block("222", "gpu-b") + block("333", "gpu-c")
+        out, removed = strip_ended_jobs(text, {"222"}, "someone")
+        self.assertEqual(sorted(removed), ["111", "333"])
+        self.assertEqual(job_ids_in(out), ["222"])
+
+    def test_no_live_jobs_drops_all_of_this_users_blocks(self):
+        out, removed = strip_ended_jobs(block("111", "gpu-a"), set(), "someone")
+        self.assertEqual(removed, ["111"])
+        self.assertEqual(job_ids_in(out), [])
+
+    def test_leaves_another_users_blocks_alone(self):
+        # Written while signed in as a different UCI ID: we never asked that queue.
+        text = block("111", "gpu-a", user="other") + block("222", "gpu-b")
+        out, removed = strip_ended_jobs(text, set(), "someone")
+        self.assertEqual(removed, ["222"])
+        self.assertEqual(job_ids_in(out), ["111"])
+
+    def test_username_is_matched_whole(self):
+        # "some" must not claim a block that belongs to "someone".
+        _, removed = strip_ended_jobs(block("111", "gpu-a"), set(), "some")
+        self.assertEqual(removed, [])
+
+    def test_never_touches_hand_written_config(self):
+        mine = "Host hpc3\n    HostName hpc3.rcic.uci.edu\n    User someone\n"
+        out, _ = strip_ended_jobs(mine + block("111", "gpu-a"), set(), "someone")
+        self.assertEqual(out.strip(), mine.strip())
+
+    def test_accepts_int_job_ids(self):
+        _, removed = strip_ended_jobs(block("111", "gpu-a"), {111}, "someone")
+        self.assertEqual(removed, [])
 
 
 @unittest.skipUnless(shutil.which("ssh"), "needs the ssh client")

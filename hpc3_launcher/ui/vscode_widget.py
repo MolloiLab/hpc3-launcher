@@ -26,7 +26,9 @@ logger = logging.getLogger('VSCodeWidget')
 
 class VSCodeWidget(QWidget):
     """VSCode remote configuration component, provides VSCode server setup and connection functionality"""
-    
+
+    SYNC_INTERVAL_MS = 60_000  # how often the queue is checked against ~/.ssh/config
+
     def __init__(self, parent=None, username=None):
         super().__init__(parent)
         
@@ -155,7 +157,12 @@ class VSCodeWidget(QWidget):
             accounts = [{'name': a['name'], 'is_personal': a['is_personal'],
                          'available': a['available']} for a in balance['accounts']]
         rep.state("checking", "looking for a running VSCode session")
-        running = self.vscode_manager.get_running_vscode_jobs()
+        try:
+            # Also brings ~/.ssh/config up to date with the queue.
+            running = self.vscode_manager.sync_ssh_config()
+        except Exception as e:
+            logger.error(f"Could not sync SSH config with the queue: {e}")
+            running = []
         rep.state("loading", "listing cluster nodes")
         nodes = self.vscode_manager.get_partition_nodes()  # {} on failure; picker degrades
         return {'accounts': accounts, 'running': running, 'nodes': nodes}
@@ -173,18 +180,43 @@ class VSCodeWidget(QWidget):
         self.status_label.setText("Ready")
         self.status_view.finish_ok("ready")
 
-        # Seed the sessions table with every VSCode job already running.
-        for job in (data['running'] or []):
-            if job.get('status') == 'RUNNING' and job.get('job_id'):
-                self.sessions[job['job_id']] = {
-                    'job_id': job['job_id'], 'status': 'RUNNING',
-                    'node': job.get('node', 'Unknown'),
-                    'hostname': job.get('node', 'Unknown'),
-                }
-        self._render_sessions_table()
+        # Seed the sessions table with every VSCode job already queued.
+        self._apply_queue(data['running'] or [])
         # Auto-select the first session so its details show.
         if self.sessions and self.selected_job_id is None:
             self.sessions_table.selectRow(0)
+
+        # From now on, keep the table and ~/.ssh/config in step with the queue: a
+        # session may start hours after it was submitted, or end from anywhere.
+        self._sync_worker = None
+        self._sync_timer = QTimer(self)
+        self._sync_timer.timeout.connect(self._sync_with_queue)
+        self._sync_timer.start(self.SYNC_INTERVAL_MS)
+
+    def _sync_with_queue(self):
+        if not self.vscode_manager:
+            return
+        if self._sync_worker is not None and self._sync_worker.isRunning():
+            return  # the last one is still waiting on the network
+        self._sync_worker = SSHWorker(lambda rep: self.vscode_manager.sync_ssh_config(),
+                                      parent=self, label="vscode-sync")
+        self._sync_worker.succeeded.connect(self._apply_queue)
+        self._sync_worker.failed.connect(
+            lambda message, hint: logger.warning(f"SSH config sync skipped: {message}"))
+        self._sync_worker.start()
+
+    def _apply_queue(self, jobs):
+        """Make the sessions table list exactly the queued VSCode jobs."""
+        live = {job['job_id']: job for job in jobs if job.get('job_id')}
+        for jid in list(self.sessions):
+            if jid not in live:
+                self._upsert_session({'job_id': jid, 'status': 'COMPLETED'})
+        for jid, job in live.items():
+            info = {'job_id': jid, 'status': job.get('status'),
+                    'node': job.get('node'), 'hostname': job.get('hostname') or job.get('node')}
+            if job.get('config'):
+                info.update(config=job['config'], port=job.get('port'))
+            self._upsert_session(info)
 
     def _populate_account_combo(self):
         self.account_combo.blockSignals(True)
