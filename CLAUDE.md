@@ -110,16 +110,17 @@ The application follows a modular architecture with separation between business 
   - Generates SSH config entries for VSCode
   - Manages remote connection settings
 
-- **updater.py** - Auto-update functionality
-  - Checks GitHub releases via API: `https://api.github.com/repos/{GITHUB_REPO}/releases/latest`
-  - Downloads and applies platform-specific installers (.dmg, .exe, .deb)
-  - Uses `UpdateWorker` QThread for async update checks
-  - Current version defined in `VERSION` constant
+- **updater.py** - Holds only the `VERSION` constant (and `GITHUB_REPO`)
+  - There is no in-app updater any more; Help → Download Latest Version… opens
+    the GitHub Releases page
 
 - **ssh_config_blocks.py** - arithmetic on the launcher's own blocks in `~/.ssh/config`
   - Deliberately free of PyQt and app state, so it can be unit tested on its own
   - Its block regex backreferences the job id, so a match can never run from one
     block's BEGIN to a different block's END
+  - `strip_ended_jobs()` drops blocks whose job is no longer queued; the VSCode
+    page runs `VSCodeManager.sync_ssh_config()` at load and every 60 s, which
+    also writes the block for any RUNNING session that lacks one
   - `strip_blocks_for_node()` drops blocks for a node whose job has ended;
     `prune_broken_blocks()` drops blocks OpenSSH would refuse to parse
   - **Anything written here can break every SSH host the user has**: OpenSSH abandons
@@ -138,7 +139,6 @@ Each widget corresponds to a page in the main application sidebar:
 - **node_status_widget.py** - Cluster node status display (sidebar: "Node Status")
 - **vscode_widget.py** - VSCode configuration interface (sidebar: "VSCode Configuration")
 - **balance_widget.py** - Account balance display (sidebar: "Account Balance")
-- **update_dialog.py** - Update notification and download UI
 
 ### Application Flow
 
@@ -153,8 +153,7 @@ Each widget corresponds to a page in the main application sidebar:
    - Sidebar navigation with QListWidget
    - Stacked pages with QStackedWidget
    - Status bar shows logged-in username
-   - Menu bar includes File→Exit and Help→Check for Updates/About
-   - Auto-checks for updates 3 seconds after startup
+   - Menu bar includes File→Exit and Help→Download Latest Version…/About
 
 3. **SSH Key Management**:
    - Keys are **ed25519 and passphraseless** — that is what makes later logins

@@ -10,16 +10,15 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QWidget, QVBoxLayout, QMessageBox,
     QDialog, QHBoxLayout, QListWidget, QStackedWidget, QSplitter,
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtCore import Qt, QTimer, QUrl
+from PyQt5.QtGui import QIcon, QFont, QDesktopServices
 
 from ui.login_dialog import LoginDialog
 from ui.task_manager_widget import TaskManagerWidget
 from ui.node_status_widget import NodeStatusWidget
 from ui.balance_widget import BalanceWidget
 from ui.vscode_widget import VSCodeWidget
-from ui.update_dialog import check_for_updates_with_ui
-from modules.updater import get_current_version
+from modules.updater import GITHUB_REPO, get_current_version
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -91,11 +90,6 @@ class MainWindow(QMainWindow):
         self._create_menu_bar()
         self.sidebar.setCurrentRow(0)
 
-        # A quiet update check shortly after startup (non-blocking, no auto-install).
-        # Skipped under the headless CI self-test so it never reaches the network.
-        if not os.environ.get("HPC3_SMOKE_TEST"):
-            QTimer.singleShot(3000, lambda: check_for_updates_with_ui(self, silent=True))
-
     @staticmethod
     def _wrap(widget):
         page = QWidget()
@@ -112,9 +106,11 @@ class MainWindow(QMainWindow):
         file_menu.addAction(exit_action)
 
         help_menu = menubar.addMenu("Help")
-        update_action = QAction("Check for Updates", self)
-        update_action.triggered.connect(lambda: check_for_updates_with_ui(self, silent=False))
-        help_menu.addAction(update_action)
+        # No in-app updater: new versions are downloaded from the Releases page.
+        releases_action = QAction("Download Latest Version…", self)
+        releases_action.triggered.connect(lambda: QDesktopServices.openUrl(
+            QUrl(f"https://github.com/{GITHUB_REPO}/releases/latest")))
+        help_menu.addAction(releases_action)
         about_action = QAction("About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)

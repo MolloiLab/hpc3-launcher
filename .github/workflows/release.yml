@@ -520,8 +520,8 @@ jobs:
 
           ## Updating
 
-          Use **Help → Check for Updates** inside the app, or download the newer installer from this
-          page and install over the top. Your SSH key is kept, so you can sign back in with it
+          Download the newer installer from this page (**Help → Download Latest Version…** in the
+          app opens it) and install over the top. Your SSH key is kept, so you can sign back in with it
           instead of going through Duo again.
 
           ## Every installer here was launch-tested
