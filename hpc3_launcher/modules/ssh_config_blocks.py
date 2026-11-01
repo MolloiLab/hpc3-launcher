@@ -71,6 +71,33 @@ def strip_blocks_for_node(config_text, node, keep_job_id=None):
     return "".join(out), removed
 
 
+def job_ids_in(config_text):
+    """The job ids of every managed block, in file order."""
+    return [m.group("jid") for m in _BLOCK.finditer(config_text)]
+
+
+def strip_ended_jobs(config_text, live_job_ids, username):
+    """Drop `username`'s managed blocks whose job is not live, returning (text, removed_ids).
+
+    `live_job_ids` must come from a queue query that SUCCEEDED: an empty set means
+    "no sessions", and so removes every block of this user's. Blocks naming a
+    different `User` were written while signed in as another UCI ID, whose queue
+    we did not ask about, so they are left alone.
+    """
+    live = {str(j) for j in live_job_ids}
+    owner = re.compile(rf"^\s*User\s+{re.escape(username)}\s*$", re.M)
+    removed = []
+
+    def _maybe_drop(match):
+        jid = match.group("jid")
+        if jid in live or not owner.search(match.group(0)):
+            return match.group(0)
+        removed.append(jid)
+        return ""
+
+    return _BLOCK.sub(_maybe_drop, config_text), removed
+
+
 # The only directives the launcher ever writes. A block containing anything else
 # is not purely ours -- most likely a marker went missing and the match ran wide
 # -- so it is left alone rather than risk deleting the user's own config.
