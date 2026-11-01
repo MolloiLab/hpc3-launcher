@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.4.0...v0.4.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* keep ~/.ssh/config in step with the queue; drop the updater; fix the macOS icon ([#12](https://github.com/MolloiLab/hpc3-launcher/issues/12)) ([474f3d0](https://github.com/MolloiLab/hpc3-launcher/commit/474f3d05e26a06c63c3fc627a3b72934c592ac7e))
+
 ## [0.4.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.3.2...v0.4.0) (2026-09-21)
 
 

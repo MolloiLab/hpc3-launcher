@@ -3,7 +3,7 @@
 
 """The app's version. release-please rewrites the VERSION line on every release."""
 
-VERSION = "0.4.0"  # x-release-please-version
+VERSION = "0.4.1"  # x-release-please-version
 GITHUB_REPO = "MolloiLab/hpc3-launcher"  # where releases are published
 
 
