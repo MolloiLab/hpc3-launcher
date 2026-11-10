@@ -64,6 +64,8 @@ class NodeStatusWidget(QWidget):
         self.snapshot = None
         self.flags = flags if flags is not None else NodeFlagStore(parent=self)
         self.flags.changed.connect(self._on_flags_changed)
+        # A few cells carry their own text colour; redraw them after a theme switch.
+        theme.notifier.changed.connect(self._rerender)
         self._worker = None
         self._last_refresh = 0.0
 
@@ -101,11 +103,9 @@ class NodeStatusWidget(QWidget):
         for family in ("gpu32", "gpu"):
             for model in hc._FAMILY_MODEL_ORDER[family]:
                 vram = hc.GPU_MODELS[model]["vram_gb"]
-                tile = StatTile(f"{model.upper()} · {vram} GB", "—", "")
+                tile = StatTile(f"{model} · {vram} GB", "—", "")
                 tile.bar = SegmentBar()
                 tile.extra.addWidget(tile.bar)
-                tile.split = label("", "faint")
-                tile.extra.addWidget(tile.split)
                 self.tiles[model] = tile
                 self.tiles_row.addWidget(tile, 1)
         outer.addLayout(self.tiles_row)
@@ -140,15 +140,18 @@ class NodeStatusWidget(QWidget):
         filters.addWidget(self.flag_btn)
         gpu_layout.addLayout(filters)
 
+        # Six columns, not eight: idle cores and free memory only matter as "what
+        # could start here", which the Room column already says (the raw numbers
+        # are in its tooltip and on the All nodes tab).
         self.gpu_nodes_table = make_table(
-            ["Node", "GPU", "GPUs", "Idle cores", "Free memory",
-             "Fits a free job now", "State", "Avoid"], stretch=5)
+            ["Node", "GPU", "In use", "Room for a free job", "State", "Avoid"], stretch=3)
         self.gpu_nodes_table.setItemDelegateForColumn(2, BarDelegate(self))
         self.gpu_nodes_table.setItemDelegateForColumn(
-            6, PillDelegate(tone_for=_node_state_tone, parent=self))
-        for col, width in enumerate((140, 76, 240, 84, 100, 0, 80, 130)):
+            4, PillDelegate(tone_for=_node_state_tone, parent=self))
+        for col, width in enumerate((160, 90, 260, 0, 110, 170)):
             if width:
                 self.gpu_nodes_table.setColumnWidth(col, width)
+        self.gpu_nodes_table.setProperty("clickableRows", True)
         self.gpu_nodes_table.itemSelectionChanged.connect(self._update_flag_button)
         self.gpu_nodes_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.gpu_nodes_table.customContextMenuRequested.connect(self._node_menu)
@@ -313,6 +316,11 @@ class NodeStatusWidget(QWidget):
     def _on_flags_changed(self):
         self._render_gpu_nodes()
 
+    def _rerender(self):
+        if self.snapshot:
+            self._render_gpu_nodes()
+            self._render_queue()
+
     def _avoid_cell(self, name, avoided):
         """The "Avoid" column: your own flag first, else what other users do."""
         count = avoided.get(name, 0)
@@ -344,7 +352,6 @@ class NodeStatusWidget(QWidget):
             if not row:
                 tile.set("—", "no nodes reported")
                 tile.bar.set_segments([])
-                tile.split.setText("")
                 continue
             idle, startable = row["idle"], row["startable"]
             if not idle:
@@ -362,8 +369,8 @@ class NodeStatusWidget(QWidget):
                     f"are already taken, so no job can use them yet.")
             tile.bar.set_segments([(row["paid"], "gpu_paid"), (row["free"], "gpu_free"),
                                    (idle, "gpu_idle")])
-            tile.split.setText(f"{row['paid']} paid · {row['free']} free · "
-                               f"{row['total']} total")
+            tile.bar.setToolTip(f"{row['paid']} held by paid jobs · {row['free']} by free "
+                                f"jobs · {idle} idle · {row['total']} in all")
 
     def _render_gpu_nodes(self):
         if not self.snapshot:
@@ -395,10 +402,9 @@ class NodeStatusWidget(QWidget):
                                      (node["gpu_free"], "gpu_free"), (idle, "gpu_idle")])
             table.setItem(row, 2, gpus)
 
-            table.setItem(row, 3, SortItem(f"{node['cpus_idle']} of {node['cpus_total']}",
-                                           sort_key=node["cpus_idle"]))
             left = max(0, node["mem_mb"] - node["alloc_mem_mb"])
-            table.setItem(row, 4, SortItem(f"{_gb(left)} GB", sort_key=left))
+            raw = (f"{node['cpus_idle']} of {node['cpus_total']} cores idle · "
+                   f"{_gb(left)} GB memory unallocated")
 
             have = cv.room(node, use_free=True)
             if have["gpus"]:
@@ -413,14 +419,14 @@ class NodeStatusWidget(QWidget):
             else:
                 text = "No free cores or memory"
             room_item = SortItem(text, sort_key=have["gpus"] * 1000 + have["cpus"])
-            room_item.setToolTip(text)
+            room_item.setToolTip(f"{text}\n{raw}" if text != "—" else raw)
             if have["gpus"]:
                 room_item.setForeground(theme.color("ok"))
             elif idle:
                 room_item.setForeground(theme.color("muted"))
-            table.setItem(row, 5, room_item)
-            table.setItem(row, 6, SortItem(cv.base_state(node["state"]) or node["state"]))
-            table.setItem(row, 7, self._avoid_cell(node["name"], avoided))
+            table.setItem(row, 3, room_item)
+            table.setItem(row, 4, SortItem(cv.base_state(node["state"]) or node["state"]))
+            table.setItem(row, 5, self._avoid_cell(node["name"], avoided))
         table.setSortingEnabled(True)
         if selected:
             for row in range(table.rowCount()):

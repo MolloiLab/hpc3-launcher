@@ -19,7 +19,7 @@ It pairs with ``core.ssh_session.SSHWorker``: wire ``worker.progress`` to
 """
 
 from PyQt5.QtCore import Qt, QTimer, QRectF
-from PyQt5.QtGui import QColor, QPainter, QPen, QFont
+from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QPlainTextEdit,
     QSizePolicy,
@@ -40,7 +40,7 @@ class Spinner(QWidget):
         super().__init__(parent)
         self._angle = 0
         self._lw = line_width
-        self._color = QColor(_c("accent"))
+        self._color = None          # None: follow the theme (see paintEvent)
         self.setFixedSize(size, size)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -66,18 +66,19 @@ class Spinner(QWidget):
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        color = self._color or QColor(_c("muted"))
         rect = QRectF(self._lw, self._lw,
                       self.width() - 2 * self._lw, self.height() - 2 * self._lw)
         # faint full ring underneath
-        track = QPen(QColor(self._color))
+        track = QPen(QColor(color))
         track.setWidth(self._lw)
-        c = QColor(self._color)
+        c = QColor(color)
         c.setAlpha(60)
         track.setColor(c)
         p.setPen(track)
         p.drawArc(rect, 0, 360 * 16)
         # bright moving arc on top (Qt angles are 1/16 deg, 0 at 3 o'clock)
-        head = QPen(QColor(self._color))
+        head = QPen(QColor(color))
         head.setWidth(self._lw)
         head.setCapStyle(Qt.RoundCap)
         p.setPen(head)
@@ -111,30 +112,22 @@ class LiveStatusView(QWidget):
         row = QHBoxLayout()
         row.setSpacing(8)
 
-        self.spinner = Spinner(self)
+        self.spinner = Spinner(self, size=14, line_width=2)
         row.addWidget(self.spinner, 0, Qt.AlignVCenter)
 
-        # status icon shown when there's no spinner (✓ / ✕ / ·)
+        # A status light shown when there's no spinner; the words stay grey.
         self.icon = QLabel("")
-        self.icon.setFixedWidth(18)
-        self.icon.setAlignment(Qt.AlignCenter)
-        f = QFont()
-        f.setBold(True)
-        self.icon.setFont(f)
+        self.icon.setProperty("dot", "none")
+        self.icon.setFixedSize(8, 8)
         row.addWidget(self.icon, 0, Qt.AlignVCenter)
 
-        text_col = QVBoxLayout()
-        text_col.setSpacing(0)
+        # One line: "Done · 2 job(s)". Colour lives in the light, not the text.
         self.state_label = QLabel("")
-        bold = QFont()
-        bold.setBold(True)
-        self.state_label.setFont(bold)
+        self.state_label.setProperty("role", "muted")
         self.detail_label = QLabel("")
-        self.detail_label.setStyleSheet(f"color: {_c('muted')};")
-        self.detail_label.setWordWrap(True)
-        text_col.addWidget(self.state_label)
-        text_col.addWidget(self.detail_label)
-        row.addLayout(text_col, 1)
+        self.detail_label.setProperty("role", "faint")
+        row.addWidget(self.state_label, 0, Qt.AlignVCenter)
+        row.addWidget(self.detail_label, 1, Qt.AlignVCenter)
 
         self.log_toggle = QToolButton()
         self.log_toggle.setText("Details ▸")
@@ -151,10 +144,7 @@ class LiveStatusView(QWidget):
         self.log.setMinimumHeight(110)
         self.log.setMaximumHeight(180)
         self.log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        mono = QFont("Menlo")
-        mono.setStyleHint(QFont.Monospace)
-        mono.setPointSize(10)
-        self.log.setFont(mono)
+        self.log.setFont(theme.mono_font(12))
         outer.addWidget(self.log)
 
     # --- log pane visibility ---------------------------------------------------
@@ -172,10 +162,8 @@ class LiveStatusView(QWidget):
 
     def start(self, state="Working…", detail="", show_log=False):
         self.log.clear()
-        self.icon.setText("")
-        self.spinner.set_color(_c("accent"))
+        self._light(None)
         self.spinner.start()
-        self.state_label.setStyleSheet(f"color: {_c('accent')};")
         self.state_label.setText(self._pretty(state))
         self.detail_label.setText(detail)
         if show_log:
@@ -186,8 +174,7 @@ class LiveStatusView(QWidget):
     def set_state(self, state, detail=""):
         # Connected to SSHWorker.progress(state, detail).
         self.spinner.start()
-        self.icon.setText("")
-        self.state_label.setStyleSheet(f"color: {_c('accent')};")
+        self._light(None)
         self.state_label.setText(self._pretty(state))
         self.detail_label.setText(detail)
         self.append_log(f"{self._pretty(state)}{(' — ' + detail) if detail else ''}")
@@ -199,9 +186,7 @@ class LiveStatusView(QWidget):
 
     def finish_ok(self, detail=""):
         self.spinner.stop()
-        self.icon.setStyleSheet(f"color: {_c('ok')};")
-        self.icon.setText("✓")
-        self.state_label.setStyleSheet(f"color: {_c('ok')};")
+        self._light("ok")
         self.state_label.setText("Done")
         self.detail_label.setText(detail)
         if detail:
@@ -210,9 +195,7 @@ class LiveStatusView(QWidget):
     def finish_error(self, message, hint=""):
         # Connected to SSHWorker.failed(message, hint).
         self.spinner.stop()
-        self.icon.setStyleSheet(f"color: {_c('danger')};")
-        self.icon.setText("✕")
-        self.state_label.setStyleSheet(f"color: {_c('danger')};")
+        self._light("danger")
         self.state_label.setText("Failed")
         self.detail_label.setText(hint or message)
         self.append_log(f"✕ {message}")
@@ -223,12 +206,17 @@ class LiveStatusView(QWidget):
 
     def reset(self):
         self.spinner.stop()
-        self.icon.setText("·")
-        self.icon.setStyleSheet(f"color: {_c('muted')};")
-        self.state_label.setStyleSheet(f"color: {_c('muted')};")
+        self._light("none")
         self.state_label.setText("Idle")
         self.detail_label.setText("")
         self.log.clear()
+
+    def _light(self, tone):
+        """Show the status light in ``tone``, or hide it (None) while the spinner runs."""
+        self.icon.setVisible(tone is not None)
+        if tone is not None:
+            self.icon.setProperty("dot", tone)
+            theme.restyle(self.icon)
 
     @staticmethod
     def _pretty(state):

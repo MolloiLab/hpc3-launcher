@@ -7,7 +7,6 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
                            QGroupBox, QMessageBox, QMenu, QDialog,
                            QDialogButtonBox, QFileDialog, QCheckBox, QFrame)
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QFont
 import logging
 import time
 from modules.slurm import SlurmManager
@@ -17,6 +16,7 @@ from modules.hpc3_constraints import (account_family, is_gpu_family, family_gpu_
                                       partition_for, runtime_cap_hours,
                                       parse_mem_gb, parse_runtime_hours)
 from core.ssh_session import SSHWorker
+from ui import theme
 from ui.status_view import LiveStatusView
 from ui.components import (PageHeader, SegmentedControl, PillDelegate, button, label,
                            divider, make_table, page_layout)
@@ -268,10 +268,7 @@ class JobSubmissionDialog(QDialog):
         
         # Script editor
         self.script_editor = QTextEdit()
-        mono = QFont("Menlo")
-        mono.setStyleHint(QFont.Monospace)
-        mono.setPixelSize(12)
-        self.script_editor.setFont(mono)
+        self.script_editor.setFont(theme.mono_font(12))
         
         # Set default script template
         default_script = """#!/bin/bash
@@ -657,6 +654,7 @@ class TaskManagerWidget(QWidget):
         self.jobs_table = make_table(
             ["Job ID", "Name", "State", "Queue", "Elapsed", "Time left", "Nodes", "CPUs",
              "Node / waiting on"], sortable=False)
+        self.jobs_table.setProperty("clickableRows", True)
         self.jobs_table.setItemDelegateForColumn(COL_STATE, PillDelegate(parent=self))
         self.jobs_table.setItemDelegateForColumn(
             COL_QUEUE, PillDelegate(tone_for=_tier_tone, parent=self))

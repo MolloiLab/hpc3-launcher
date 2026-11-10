@@ -26,10 +26,9 @@ import time
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, pyqtSlot, QTimer, QSettings
-from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QSpinBox, QTextEdit,
-    QTabWidget, QScrollArea, QFrame, QTableWidgetItem, QApplication,
+    QTabWidget, QScrollArea, QFrame, QTableWidgetItem, QApplication, QSizePolicy,
 )
 
 from modules.vscode_helper import VSCodeManager, build_sbatch_command, is_terminal_state
@@ -39,11 +38,12 @@ from modules import hpc3_constraints as hc
 from modules import cluster_view as cv
 from modules.node_flags import NodeFlagStore, valid_node
 from core.ssh_session import SSHWorker
+from ui import theme
 from ui.status_view import LiveStatusView
 from ui.checkable_combo import CheckableComboBox
 from ui.components import (
-    Card, PageHeader, SegmentedControl, PillDelegate, ask_flag_note, button, label,
-    divider, make_table, page_layout, set_tone,
+    Card, PageHeader, SegmentedControl, PillDelegate, ask_flag_note, button, dot, label,
+    divider, make_table, page_layout, set_dot,
 )
 
 logger = logging.getLogger('VSCodeWidget')
@@ -567,14 +567,11 @@ class VSCodeWidget(QWidget):
         self.host_label.setText(host)
         self.copy_host_btn.setEnabled(host != '?')
         text = (
-            "1. The SSH config was written to ~/.ssh/config for you.\n\n"
-            "2. In VSCode press F1, run \"Remote-SSH: Connect to Host…\" and pick:\n"
-            f"     {host}\n\n"
-            f"Host:    {host}\n"
-            f"User:    {config.get('user', self.username)}\n"
-            f"Port:    {config.get('port', '?')}\n"
-            f"Job ID:  {info.get('job_id', 'N/A')}\n\n"
-            "3. When you're done, select the session above and press Cancel session.\n"
+            "In VSCode press F1, run \"Remote-SSH: Connect to Host…\" and pick the host "
+            "above. It is already in your ~/.ssh/config.\n\n"
+            f"User {config.get('user', self.username)} · port {config.get('port', '?')} · "
+            f"job {info.get('job_id', 'N/A')}\n\n"
+            "When you're done, select the session and press Cancel session."
         )
         self.config_text.setPlainText(text)
 
@@ -593,6 +590,47 @@ class VSCodeWidget(QWidget):
         box.addWidget(label(text, "field"))
         box.addWidget(widget)
         grid.addLayout(box, row, col, 1, span)
+
+    def _advice_line(self, layout, action=None, on_click=None):
+        """One row of the outlook card. Returns (light, text, action button)."""
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        light = dot()
+        holder = QVBoxLayout()              # drops the light onto the first text line
+        holder.setContentsMargins(0, 5, 0, 0)
+        holder.addWidget(light)
+        holder.addStretch(1)
+        row.addLayout(holder)
+        text = label("", wrap=True)
+        row.addWidget(text, 1)
+        act = None
+        if action:
+            act = button(action, "link", on_click)
+            act.hide()
+            row.addWidget(act, 0, Qt.AlignTop)
+        layout.addLayout(row)
+        return light, text, act
+
+    def _set_line(self, light, text, html, tone=None):
+        """Fill one outlook row, or hide it when there is nothing to say."""
+        light.setVisible(bool(html))
+        text.setVisible(bool(html))
+        if html:
+            text.setText(html)
+            set_dot(light, tone)
+
+    def _toggle_more(self, checked=None):
+        shown = self.more_btn.isChecked() if checked is None else bool(checked)
+        self.more_btn.setChecked(shown)
+        self.more_box.setVisible(shown)
+        self._update_more_label()
+
+    def _update_more_label(self):
+        avoided = len(self._avoided()) if self.snapshot or self.flags.names() else 0
+        text = "Fewer options" if self.more_btn.isChecked() else "More options"
+        if avoided and not self.more_btn.isChecked():
+            text += f" · {avoided} node{'s' if avoided != 1 else ''} avoided"
+        self.more_btn.setText(text)
 
     def init_ui(self):
         """Initialize UI components"""
@@ -636,7 +674,7 @@ class VSCodeWidget(QWidget):
             "needs the node.",
             "Spends SUs from the account. Starts ahead of free jobs and is never preempted."])
         self.free_option_check.changed.connect(self.on_free_changed)
-        self._field(grid, row, "TIER", self.free_option_check, 0, 2)
+        self._field(grid, row, "Tier", self.free_option_check, 0, 2)
         row += 1
 
         # 2. Account -- on the paid tier its suffix sets the partition family; on
@@ -645,7 +683,7 @@ class VSCodeWidget(QWidget):
         self.account_combo.addItem("Loading…", None)
         self.account_combo.currentIndexChanged.connect(self.on_account_changed)
         self.account_combo.activated.connect(self._on_account_picked)
-        self._field(grid, row, "ACCOUNT", self.account_combo, 0, 2)
+        self._field(grid, row, "Account", self.account_combo, 0, 2)
         row += 1
 
         # 3. GPU -- only the models this tier + account can actually reach.
@@ -663,7 +701,7 @@ class VSCodeWidget(QWidget):
         self.gpu_count_spinbox.setValue(1)
         self.gpu_count_spinbox.setEnabled(False)  # until a GPU is selected
         self.gpu_count_spinbox.valueChanged.connect(self.on_gpu_count_changed)
-        self._field(grid, row, "GPUS", self.gpu_count_spinbox, 0)
+        self._field(grid, row, "GPUs", self.gpu_count_spinbox, 0)
 
         # 5. Memory -- HPC3 caps RAM per core, so more memory means more cores.
         self.memory_combo = QComboBox()
@@ -671,7 +709,7 @@ class VSCodeWidget(QWidget):
             self.memory_combo.addItem(mem)
         self.memory_combo.setCurrentText("16G")
         self.memory_combo.currentIndexChanged.connect(self.on_memory_changed)
-        self._field(grid, row, "MEMORY", self.memory_combo, 1)
+        self._field(grid, row, "Memory", self.memory_combo, 1)
         row += 1
 
         # 6. CPUs -- min from memory (GB-per-core cap), max from the node type.
@@ -680,7 +718,7 @@ class VSCodeWidget(QWidget):
         self.cpu_spinbox.setMaximum(128)
         self.cpu_spinbox.setValue(2)
         self.cpu_spinbox.valueChanged.connect(self.on_cpu_changed)
-        self._field(grid, row, "CPUS", self.cpu_spinbox, 0)
+        # (placed under "More options" below: it is derived, rarely touched)
 
         # 7. Run time -- capped at 3 days on free queues, 14 days on paid.
         self.time_combo = QComboBox()
@@ -688,8 +726,7 @@ class VSCodeWidget(QWidget):
             self.time_combo.addItem(t)
         self.time_combo.setCurrentText("8:00:00")
         self.time_combo.currentIndexChanged.connect(self.on_time_changed)
-        self._field(grid, row, "RUN TIME", self.time_combo, 1)
-        row += 1
+        self._field(grid, row, "Run time", self.time_combo, 0, 2)
 
         # 8. Bad nodes -- tick any node Slurm should keep your jobs off (sbatch
         #    --exclude), e.g. one whose GPU is broken. A tick is a flag: it is
@@ -699,25 +736,33 @@ class VSCodeWidget(QWidget):
         self.exclude_combo.setToolTip(
             "Tick a node to keep every launch off it. Remembered until you untick it.")
         self.exclude_combo.checked_changed.connect(self.on_exclude_changed)
-        self._field(grid, row, "BAD NODES TO AVOID", self.exclude_combo, 0, 2)
         form.body.addLayout(grid)
 
-        # What will actually be requested, in one line.
-        self.status_label = label("Loading…", "summary", wrap=True)
-        form.body.addWidget(self.status_label)
+        # The two fields that are rarely touched stay folded away, so the form
+        # reads as five choices rather than eight.
+        self.more_btn = button("More options", "ghost", self._toggle_more)
+        self.more_btn.setCheckable(True)
+        form.body.addWidget(self.more_btn, 0, Qt.AlignLeft)
+        self.more_box = QWidget()
+        more = QGridLayout(self.more_box)
+        more.setContentsMargins(0, 0, 0, 0)
+        more.setHorizontalSpacing(12)
+        more.setVerticalSpacing(10)
+        more.setColumnStretch(0, 1)
+        more.setColumnStretch(1, 1)
+        self._field(more, 0, "CPUs (set by memory)", self.cpu_spinbox, 0)
+        self._field(more, 1, "Bad nodes to avoid", self.exclude_combo, 0, 2)
+        self.more_box.hide()
+        form.body.addWidget(self.more_box)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
         # Launch button -- each click starts a NEW session (multiple may run).
         self.submit_btn = button("Launch session", "primary", self.submit_job)
         self.submit_btn.setEnabled(False)  # until an account is selected
-        buttons.addWidget(self.submit_btn, 1)
-        self.estimate_btn = button("Estimate start", None, self.estimate_start)
-        self.estimate_btn.setToolTip("Ask Slurm when this exact request would start. "
-                                     "Nothing is submitted.")
-        self.estimate_btn.setEnabled(False)
-        buttons.addWidget(self.estimate_btn)
-        form.body.addLayout(buttons)
+        form.body.addWidget(self.submit_btn)
+
+        # What will actually be requested, in one quiet line under the button.
+        self.status_label = label("Loading…", "summary", wrap=True)
+        form.body.addWidget(self.status_label)
 
         form_host_layout.addWidget(form)
         form_host_layout.addStretch(1)
@@ -735,45 +780,21 @@ class VSCodeWidget(QWidget):
         advice = self.advice_card.body
         advice.setSpacing(6)
         # Slurm's start estimate for this same size on every GPU model.
-        self.compare_btn = button("Which GPU starts soonest?", None, self.compare_starts)
+        self.compare_btn = button("Check start times", None, self.compare_starts)
         self.compare_btn.setToolTip(
             "Asks Slurm when this size of job would start on each GPU model. "
             "Nothing is submitted.")
         self.advice_card.add_action(self.compare_btn)
 
-        prio_row = QHBoxLayout()
-        prio_row.setSpacing(8)
-        self.priority_label = label("", wrap=True)
-        prio_row.addWidget(self.priority_label, 1)
-        self.use_best_btn = button("Use it", "ghost", self._use_best_account)
-        self.use_best_btn.hide()
-        prio_row.addWidget(self.use_best_btn, 0, Qt.AlignTop)
-        advice.addLayout(prio_row)
-
-        fit_row = QHBoxLayout()
-        fit_row.setSpacing(8)
-        self.fit_label = label("", wrap=True)
-        fit_row.addWidget(self.fit_label, 1)
-        self.shrink_btn = button("Shrink to fit", "ghost", self._shrink_to_fit)
-        self.shrink_btn.hide()
-        fit_row.addWidget(self.shrink_btn, 0, Qt.AlignTop)
-        advice.addLayout(fit_row)
-
-        suspect_row = QHBoxLayout()
-        suspect_row.setSpacing(8)
-        self.suspect_label = label("", wrap=True)
-        suspect_row.addWidget(self.suspect_label, 1)
-        self.avoid_suspect_btn = button("Avoid it", "ghost", self._avoid_suspects)
-        suspect_row.addWidget(self.avoid_suspect_btn, 0, Qt.AlignTop)
-        advice.addLayout(suspect_row)
+        # Each line: a status light, plain words, and at most one quiet action.
+        self.priority_dot, self.priority_label, self.use_best_btn = self._advice_line(
+            advice, "Use it", self._use_best_account)
+        self.fit_dot, self.fit_label, self.shrink_btn = self._advice_line(
+            advice, "Shrink to fit", self._shrink_to_fit)
+        self.suspect_dot, self.suspect_label, self.avoid_suspect_btn = self._advice_line(
+            advice, "Avoid it", self._avoid_suspects)
         self._suspects = []
-
-        self.time_hint_label = label("", "muted", wrap=True)
-        advice.addWidget(self.time_hint_label)
-
-        self.estimate_label = label("", "muted", wrap=True)
-        self.estimate_label.hide()
-        advice.addWidget(self.estimate_label)
+        self.time_dot, self.time_hint_label, _unused = self._advice_line(advice)
 
         # One small tile per GPU model, soonest first (filled by compare_starts).
         self.compare_box = QWidget()
@@ -804,7 +825,11 @@ class VSCodeWidget(QWidget):
         self.sessions_table.setColumnWidth(0, 104)
         self.sessions_table.setColumnWidth(1, 104)
         self.sessions_table.setColumnWidth(2, 108)
+        # "Ignored": inside the scrolling column Qt sizes by preferred height, and a
+        # table's built-in preference (192 px) would push the Connect card off screen.
+        self.sessions_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         self.sessions_table.setMinimumHeight(110)
+        self.sessions_table.setProperty("clickableRows", True)
         self.sessions_table.itemSelectionChanged.connect(self._on_session_selected)
         sessions_card.body.addWidget(self.sessions_table)
         right.addWidget(sessions_card, 3)
@@ -823,17 +848,16 @@ class VSCodeWidget(QWidget):
         result_widget = QTabWidget()
         self.config_text = QTextEdit()
         self.config_text.setReadOnly(True)
-        self.config_text.setProperty("role", "mono")
+        self.config_text.setProperty("flat", True)
         self.config_text.setPlaceholderText(
             "Select a running session to see how to connect to it from VSCode.")
         self.job_info_text = QTextEdit()
         self.job_info_text.setReadOnly(True)
         self.job_info_text.setPlaceholderText("Select a session to see its details.")
-        mono = QFont("Menlo")
-        mono.setStyleHint(QFont.Monospace)
-        mono.setPixelSize(12)
-        self.config_text.setFont(mono)
-        self.job_info_text.setFont(mono)
+        self.job_info_text.setProperty("flat", True)
+        self.job_info_text.setFont(theme.mono_font(12))
+        result_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        result_widget.setMinimumHeight(132)
         result_widget.addTab(self.config_text, "How to connect")
         result_widget.addTab(self.job_info_text, "Job details")
         details.body.addWidget(result_widget)
@@ -929,6 +953,7 @@ class VSCodeWidget(QWidget):
 
     def _on_flags_changed(self):
         self._update_flag_button()
+        self._update_more_label()
         self._rebuild_exclude_options()
         if self._applying:
             return
@@ -1120,7 +1145,6 @@ class VSCodeWidget(QWidget):
                 self.time_combo.setCurrentIndex(best)
 
             self.submit_btn.setEnabled(valid and self.vscode_manager is not None)
-            self.estimate_btn.setEnabled(valid and self.insights is not None)
             self._rebuild_exclude_options()  # the target partition may have changed
             self._update_status_line()
             self._update_advice()
@@ -1160,7 +1184,6 @@ class VSCodeWidget(QWidget):
     def _update_advice(self):
         """Refresh the priority / fit / run-time advice under the form."""
         req = self._request()
-        self.estimate_label.hide()
         if req is None or not req['use_free'] or self.snapshot is None:
             self.advice_card.setVisible(False)
             return
@@ -1170,23 +1193,17 @@ class VSCodeWidget(QWidget):
         self._update_suspect_advice(req)
         self._update_compare(req)
         hours = hc.parse_runtime_hours(req['time_limit'])
-        if hours > 12:
-            self.time_hint_label.setText(
-                "A shorter run time helps: Slurm slots short jobs into gaps a long "
-                "one can't use.")
-            self.time_hint_label.show()
-        else:
-            self.time_hint_label.hide()
+        self._set_line(self.time_dot, self.time_hint_label,
+                       "A shorter run time helps: Slurm slots short jobs into gaps a "
+                       "long one can't use." if hours > 12 else "")
 
     def _update_priority_advice(self, req):
         shares = self._fairshare()
         account = req['account']
         self.use_best_btn.hide()
         if account not in shares:
-            self.priority_label.setText("")
-            self.priority_label.hide()
+            self._set_line(self.priority_dot, self.priority_label, "")
             return
-        self.priority_label.show()
         priority = cv.free_priority(shares[account])
         partitions = req['partition'].split(",")
         ahead, competing = 0, 0
@@ -1201,23 +1218,23 @@ class VSCodeWidget(QWidget):
             standing = f"{ahead} of {competing} waiting jobs rank above you"
         best = self._best_free_account()
         if best and best != account and shares[best] > shares[account]:
-            self.priority_label.setText(
+            self._set_line(
+                self.priority_dot, self.priority_label,
                 f"<b>Queue priority ≈ {priority:,}</b> with {account} — {standing}. "
-                f"<b>{best}</b> would give ≈ {cv.free_priority(shares[best]):,}.")
-            set_tone(self.priority_label, "warn")
+                f"<b>{best}</b> would give ≈ {cv.free_priority(shares[best]):,}.", "warn")
             self.use_best_btn.show()
         else:
-            self.priority_label.setText(
-                f"<b>Queue priority ≈ {priority:,}</b> with {account} — {standing}.")
-            set_tone(self.priority_label, "ok" if ahead == 0 else None)
+            self._set_line(
+                self.priority_dot, self.priority_label,
+                f"<b>Queue priority ≈ {priority:,}</b> with {account} — {standing}.",
+                "ok" if ahead == 0 else None)
 
     def _update_fit_advice(self, req):
         self.shrink_btn.hide()
         self._shrink_target = None
         if req['gpu_type'] is None:
-            self.fit_label.hide()
+            self._set_line(self.fit_dot, self.fit_label, "")
             return
-        self.fit_label.show()
         mem_gb = hc.parse_mem_gb(req['memory'])
         report = cv.fit_report(self.snapshot['nodes'], req['family'], req['gpu_type'],
                                req['gpu_count'], req['cpus'], mem_gb, use_free=True,
@@ -1229,10 +1246,10 @@ class VSCodeWidget(QWidget):
         if report['fits']:
             first = report['fits'][0]
             more = len(report['fits']) - 1
-            self.fit_label.setText(
+            self._set_line(
+                self.fit_dot, self.fit_label,
                 f"<b>Fits right now</b> on {first}" + (f" and {more} more" if more else "")
-                + " — idle GPU, cores and memory to spare." + aside)
-            set_tone(self.fit_label, "ok")
+                + " — idle GPU, cores and memory to spare." + aside, "ok")
             return
         best = report['best']
         if best is None:
@@ -1242,15 +1259,15 @@ class VSCodeWidget(QWidget):
                        f"with {req['gpu_count']} free and spare cores")
             else:
                 why = f"no idle {what} right now"
-            self.fit_label.setText(f"<b>Will queue</b> — {why}.{aside}")
-            set_tone(self.fit_label, None)
+            self._set_line(self.fit_dot, self.fit_label,
+                           f"<b>Will queue</b> — {why}.{aside}")
             return
         target = self._largest_memory_that_fits(best, req)
-        self.fit_label.setText(
+        self._set_line(
+            self.fit_dot, self.fit_label,
             f"<b>Too big for what's idle.</b> {best['name']} has {req['gpu_count']} idle "
             f"{what}{plural} but only {best['cpus']} cores / {best['mem_gb']} GB left."
-            + (f" {target} would start now." if target else "") + aside)
-        set_tone(self.fit_label, "warn")
+            + (f" {target} would start now." if target else "") + aside, "warn")
         if target:
             self._shrink_target = target
             self.shrink_btn.show()
@@ -1265,18 +1282,18 @@ class VSCodeWidget(QWidget):
             self._suspects = [n for n in cv.suspect_nodes(avoided)
                               if n in pool and not self.flags.is_flagged(n)]
         if not self._suspects:
-            self.suspect_label.hide()
+            self._set_line(self.suspect_dot, self.suspect_label, "")
             self.avoid_suspect_btn.hide()
             return
         # One at a time, most-avoided first: every flag shrinks the pool the job
         # can start on, so each one is its own decision.
         first = self._suspects[0]
         more = len(self._suspects) - 1
-        self.suspect_label.setText(
+        self._set_line(
+            self.suspect_dot, self.suspect_label,
             f"<b>{first} may be faulty</b> — {self.snapshot['avoided'][first]} other "
-            f"users' queued jobs avoid it." + (f" ({more} more like it.)" if more else ""))
-        set_tone(self.suspect_label, "warn")
-        self.suspect_label.show()
+            f"users' queued jobs avoid it." + (f" ({more} more like it.)" if more else ""),
+            "warn")
         self.avoid_suspect_btn.show()
 
     # --- which GPU starts soonest ----------------------------------------------
@@ -1340,7 +1357,7 @@ class VSCodeWidget(QWidget):
         worker.start()
 
     def _on_comparison(self, key, rows, results):
-        self.compare_btn.setText("Which GPU starts soonest?")
+        self.compare_btn.setText("Check start times")
         self.compare_btn.setEnabled(True)
         while self.compare_row.count():
             item = self.compare_row.takeAt(0)
@@ -1418,45 +1435,6 @@ class VSCodeWidget(QWidget):
         if index >= 0:
             self._account_pinned = False
             self.account_combo.setCurrentIndex(index)
-
-    def estimate_start(self):
-        """Ask Slurm when this exact request would start (sbatch --test-only)."""
-        req = self._request()
-        if req is None or self.insights is None:
-            return
-        try:
-            command = build_sbatch_command(
-                cpus=req['cpus'], memory=req['memory'], gpu_type=req['gpu_type'],
-                gpu_count=max(1, req['gpu_count']), account=req['account'],
-                time_limit=req['time_limit'], use_free=req['use_free'],
-                exclude_nodes=self._avoided(),
-                family=req['family'], test_only=True)
-        except ValueError as e:
-            self.show_error(str(e))
-            return
-        self.estimate_btn.setEnabled(False)
-        self.estimate_label.setText("Asking Slurm…")
-        set_tone(self.estimate_label, None)
-        self.estimate_label.show()
-        worker = SSHWorker(lambda rep: self.insights.estimate_start(command),
-                           parent=self, label="estimate")
-        worker.succeeded.connect(self._on_estimate)
-        worker.failed.connect(lambda message, hint: self._on_estimate(
-            {'ok': False, 'message': message}))
-        worker.start()
-
-    def _on_estimate(self, result):
-        self.estimate_btn.setEnabled(self._request() is not None)
-        self.estimate_label.show()
-        if result.get('ok'):
-            where = f" on {result['node']}" if result.get('node') else ""
-            self.estimate_label.setText(
-                f"<b>Slurm's estimate: {friendly_time(result['start'])}</b>{where}. "
-                f"A guess from today's queue — it moves as jobs end or arrive.")
-            set_tone(self.estimate_label, "accent")
-        else:
-            self.estimate_label.setText(f"Slurm would reject this: {result.get('message')}")
-            set_tone(self.estimate_label, "danger")
 
     # --- remembering the last request -----------------------------------------
 

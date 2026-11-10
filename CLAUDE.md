@@ -179,9 +179,24 @@ Each widget corresponds to a page in the main application sidebar:
 
 Look and layout live in two shared files; pages must not hard-code colours:
 
-- **theme.py** - the palette (light and dark, following the OS; `HPC3_THEME=light|dark`
-  overrides), the Fusion style and the single stylesheet. Widgets opt into variants
-  with dynamic properties (`variant="primary"`, `role="title"`, `card=True`)
+- **theme.py** - the palette, the Fusion style and the single stylesheet. Widgets
+  opt into variants with dynamic properties (`variant="primary"`, `role="title"`,
+  `card=True`)
+  - Light or dark is the user's choice (sidebar switch, View > Appearance; saved
+    as `ui/theme`; `HPC3_THEME=light|dark` overrides) and **changes while the app
+    is running, so never cache a colour**: no `setStyleSheet(f"color: {...}")` on
+    a widget. Style through a property, paint with `theme.color()` at paint time,
+    or redraw on `theme.notifier.changed`
+  - The look is deliberately quiet: neutral canvas, hairline borders, one accent,
+    no card inside a card, sentence-case labels, and a state shown as a small
+    coloured dot beside plain text (`components.dot`) rather than coloured text
+  - One application-wide event filter gives every button, combo box, tab and
+    checkbox a pointing-hand cursor; a table whose rows do something sets the
+    `clickableRows` property. Don't set cursors widget by widget
+  - Windows needs its own handling, all here or in `main()`: dark mode is read
+    from the registry, the title bar is darkened through DWM, the monospace face
+    comes from `theme.mono_font()` (not "Menlo"), and fractional display scaling
+    is passed through rather than rounded
 - **components.py** - `Card`, `PageHeader`, `StatTile`, `SegmentedControl`,
   `SegmentBar`, `make_table()` and the delegates that draw pills and bars in cells
 
@@ -289,6 +304,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
   request. It patches `QSettings` to a temp file; keep it that way.
 - `tests/test_node_flags.py` — the remembered bad-node list: survives a restart,
   tolerates a corrupt settings value, refuses hostile names.
+- `tests/test_theme.py` — switching light/dark at runtime (nothing may keep a
+  stale colour) and pointing-hand cursors on every kind of clickable control.
 - `tests/test_environment.py` — a dependency-check script, not a unittest module.
 
 CI runs this suite on **ubuntu, macOS and Windows**. The Windows job matters: the
