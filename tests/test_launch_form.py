@@ -254,6 +254,7 @@ class TestFreeTierAdvice(FormTestCase):
         self.assertEqual(self.form.account_combo.currentData(), "pi_lab_gpu")
 
     def test_oversized_request_offers_to_shrink_and_then_fits(self):
+        self.form._allowed_suspects.add(BAD_NODE)       # the roomy node in the fixture
         self.pick_gpu("gpu32", "RTX6000")
         self.form.gpu_count_spinbox.setValue(1)
         self.form.memory_combo.setCurrentText("96G")
@@ -292,21 +293,35 @@ class TestBadNodes(FormTestCase):
         self.pick_gpu("gpu", "A30")
         self.assertTrue(self.form.suspect_label.isHidden())
 
-    def test_one_click_flags_it_and_the_launch_stays_off_it(self):
+    def test_a_suspect_node_is_stayed_off_by_default(self):
+        # A warning alone did not work: with it on screen, a real job still went to
+        # the broken node, whose GPUs were the only idle ones. So staying off is the
+        # default and allowing the node is the deliberate click.
         self.pick_gpu("gpu32", "RTX6000")
         self.form.memory_combo.setCurrentText("16G")
-        self.assertIn(f"Fits right now</b> on {BAD_NODE}", self.form.fit_label.text())
-        self.form.avoid_suspect_btn.click()
-        self.assertEqual(self.form.flags.names(), [BAD_NODE])
-        self.assertTrue(self.form.suspect_label.isHidden())
-        self.assertEqual(self.form.exclude_combo.checked_values(), [BAD_NODE])
+        self.assertEqual(self.form._avoided(), [BAD_NODE])
+        self.assertIn(f"Staying off {BAD_NODE}", self.form.suspect_label.text())
         self.assertIn(f"Kept off {BAD_NODE}", self.form.status_label.text())
-        # The idle GPU on the flagged node no longer counts as somewhere to start.
+        # Its idle GPU does not count as somewhere to start.
         self.assertNotIn("Fits right now", self.form.fit_label.text())
-        self.assertIn("node you flagged", self.form.fit_label.text())
+        self.assertIn("stays off", self.form.fit_label.text())
+        self.assertEqual(self.form.flags.names(), [])      # not a remembered flag
         with mock.patch.object(self.form, "_do_submit"):
             self.form.submit_job()
         self.assertEqual(self.form._pending_submit["exclude_nodes"], [BAD_NODE])
+
+    def test_one_click_allows_it_again(self):
+        self.pick_gpu("gpu32", "RTX6000")
+        self.form.memory_combo.setCurrentText("16G")
+        self.assertEqual(self.form.avoid_suspect_btn.text(), "Allow it")
+        self.form.avoid_suspect_btn.click()
+        self.assertEqual(self.form._avoided(), [])
+        self.assertTrue(self.form.suspect_label.isHidden())
+        self.assertIn(f"Fits right now</b> on {BAD_NODE}", self.form.fit_label.text())
+        self.assertNotIn("Kept off", self.form.status_label.text())
+        # ...and a node you flag yourself stays off whatever you allowed.
+        self.form.flags.flag(BAD_NODE)
+        self.assertEqual(self.form._avoided(), [BAD_NODE])
 
     def test_a_flag_is_remembered_by_the_next_form(self):
         self.form.flags.flag(BAD_NODE, "GPU 2 dead")
@@ -316,6 +331,7 @@ class TestBadNodes(FormTestCase):
         self.assertEqual(self.flag_store().names(), [BAD_NODE])
 
     def test_ticking_the_picker_is_flagging(self):
+        self.form._allowed_suspects.add(BAD_NODE)       # look at flags alone
         self.form.partition_nodes = {"free-gpu32": [(BAD_NODE, "mixed"),
                                                     ("hpc3-gpu-n54-01", "mixed")]}
         self.form._apply_cascade()
@@ -463,7 +479,8 @@ class TestSubmit(FormTestCase):
         do_submit.assert_called_once()
         self.assertEqual(self.form._pending_submit, dict(
             cpus=8, memory="48G", gpu_type="RTX6000", gpu_count=1, account="pi_lab_gpu",
-            time_limit="8:00:00", use_free=True, family="gpu32", exclude_nodes=[]))
+            time_limit="8:00:00", use_free=True, family="gpu32",
+            exclude_nodes=[BAD_NODE]))      # six other users avoid it: off by default
 
     def test_the_last_request_is_restored_next_time(self):
         self.pick_gpu("gpu", "A30")
