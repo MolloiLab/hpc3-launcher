@@ -35,7 +35,9 @@ FREE_PARTITIONS = ("free", "free-gpu", "free-gpu32")
 SINFO_CMD = ('sinfo -h -N -O "NodeList:30,Partition:20,StateLong:20,CPUsState:20,'
              'Memory:14,AllocMem:14,Gres:40,GresUsed:60"')
 RUNNING_CMD = ("squeue -h -t R -p " + ",".join(GPU_PARTITIONS) + " -o '%P|%N|%b|%u'")
-PENDING_CMD = ("squeue -h -t PD -p " + ",".join(GPU_PARTITIONS) + " -o '%P|%r|%Q|%b|%u'")
+# %x is the job's own --exclude list: what other people steer clear of is the best
+# public hint that a node is faulty.
+PENDING_CMD = ("squeue -h -t PD -p " + ",".join(GPU_PARTITIONS) + " -o '%P|%r|%Q|%b|%u|%x'")
 SHARE_CMD = "sshare -U -h -P -o Account,FairShare"
 
 _SEP = "@@HPC3-SECTION@@"
@@ -46,6 +48,10 @@ _USABLE_STATES = ("idle", "mixed")
 
 # Pending reasons, sorted into what they mean for someone else in the queue.
 _COMPETING = ("Priority", "Resources", "None")
+
+# A node that this many *other* users' queued jobs exclude is called out as suspect.
+# (On the day this was written the known-bad node had 14, the next two had 5.)
+SUSPECT_MIN_USERS = 4
 
 
 # --- small parsers -------------------------------------------------------------
@@ -259,16 +265,22 @@ def nodes_for(nodes, family=None, gpu_type=None):
     return picked
 
 
-def fit_report(nodes, family, gpu_type, gpus, cpus, mem_gb, use_free=True):
+def fit_report(nodes, family, gpu_type, gpus, cpus, mem_gb, use_free=True, exclude=()):
     """How a request compares with what is idle right now.
 
-    Returns {fits: [node names], idle_gpus, best: room-dict-with-name or None}.
-    ``best`` is the roomiest node that has at least the requested GPU count, which
-    is what "shrink to fit" sizes the request down to.
+    Returns {fits: [node names], idle_gpus, best: room-dict-with-name or None,
+    avoided_idle}. ``best`` is the roomiest node that has at least the requested
+    GPU count, which is what "shrink to fit" sizes the request down to. Nodes in
+    ``exclude`` (the ones the job will be kept off) are left out of all of that;
+    ``avoided_idle`` counts the idle GPUs sitting on them.
     """
+    exclude = set(exclude or ())
     candidates = nodes_for(nodes, family, gpu_type or None)
-    fits, best, idle = [], None, 0
+    fits, best, idle, avoided_idle = [], None, 0, 0
     for node in candidates:
+        if node["name"] in exclude:
+            avoided_idle += node["gpu_total"] - node["gpu_used"]
+            continue
         have = room(node, use_free)
         idle += node["gpu_total"] - node["gpu_used"]
         if have["gpus"] >= gpus and have["cpus"] >= cpus and have["mem_gb"] >= mem_gb:
@@ -277,7 +289,8 @@ def fit_report(nodes, family, gpu_type, gpus, cpus, mem_gb, use_free=True):
             key = (have["mem_gb"], have["cpus"])
             if best is None or key > (best["mem_gb"], best["cpus"]):
                 best = dict(have, name=node["name"])
-    return {"fits": sorted(fits), "idle_gpus": idle, "best": best}
+    return {"fits": sorted(fits), "idle_gpus": idle, "best": best,
+            "avoided_idle": avoided_idle}
 
 
 def summarize_models(nodes, use_free=True):
@@ -308,16 +321,43 @@ def summarize_models(nodes, use_free=True):
 # --- the queue -----------------------------------------------------------------
 
 def parse_pending(output):
-    """Parse ``PENDING_CMD`` output into [{partitions, reason, priority, gpus, user}]."""
+    """Parse ``PENDING_CMD`` output into
+    [{partitions, reason, priority, gpus, user, excluded}]."""
     jobs = []
     for line in (output or "").splitlines():
         parts = line.strip().split("|")
         if len(parts) < 5 or not parts[2].isdigit():
             continue
+        excluded = parts[5].strip() if len(parts) > 5 else ""
         jobs.append({"partitions": [p for p in parts[0].split(",") if p],
                      "reason": parts[1], "priority": int(parts[2]),
-                     "gpus": parse_job_gpus(parts[3]), "user": parts[4]})
+                     "gpus": parse_job_gpus(parts[3]), "user": parts[4].strip(),
+                     "excluded": [] if excluded in ("", "(null)") else
+                     expand_hostlist(excluded)})
     return jobs
+
+
+def avoided_nodes(pending, username=None):
+    """{node: how many *other* users have a queued job that excludes it}.
+
+    Nobody excludes a healthy node from their own job, so a node several
+    unrelated people all keep their work off is very likely faulty (a dead GPU, a
+    bad driver). Users are counted, not jobs: one person's 300-task array is one
+    opinion.
+    """
+    users = {}
+    for job in pending:
+        if username and job["user"] == username:
+            continue
+        for node in job.get("excluded", ()):
+            users.setdefault(node, set()).add(job["user"])
+    return {node: len(who) for node, who in users.items()}
+
+
+def suspect_nodes(avoided, minimum=SUSPECT_MIN_USERS):
+    """The nodes enough other users avoid to be worth a warning, most-avoided first."""
+    return sorted((n for n, count in avoided.items() if count >= minimum),
+                  key=lambda n: (-avoided[n], n))
 
 
 def queue_summary(pending):
@@ -366,7 +406,10 @@ def parse_fairshare(output):
         if len(parts) < 2:
             continue
         try:
-            shares[parts[0].strip()] = float(parts[1])
+            # Lower case, always: Slurm stores account names that way, while
+            # ``sbank`` prints them in capitals. Matching the two by exact case
+            # silently matched nothing.
+            shares[parts[0].strip().lower()] = float(parts[1])
         except ValueError:
             continue
     return shares
@@ -377,12 +420,20 @@ def free_priority(fairshare):
     return int(round(FAIRSHARE_WEIGHT * fairshare)) + FREE_BASE_PRIORITY
 
 
+def account_share(account, shares):
+    """The fair-share factor for ``account`` (any letter case), or None."""
+    return shares.get((account or "").lower())
+
+
 def best_free_account(accounts, shares):
-    """The account (from ``accounts``) with the highest fair share, or None."""
-    known = [a for a in accounts if a in shares]
+    """The account (from ``accounts``) with the highest fair share, or None.
+
+    Names are compared without regard to case and returned as they were given.
+    """
+    known = [a for a in accounts if account_share(a, shares) is not None]
     if not known:
         return None
-    return max(known, key=lambda a: (shares[a], a))
+    return max(known, key=lambda a: (account_share(a, shares), a))
 
 
 def parse_test_only(output):
@@ -437,10 +488,21 @@ class ClusterInsights:
 
     def estimate_start(self, sbatch_command, reporter=None):
         """Ask Slurm when a job would start, without submitting it."""
-        if " --test-only" not in sbatch_command:
-            raise ValueError("estimate_start only runs sbatch --test-only")
+        return self.estimate_starts([sbatch_command], reporter)[0]
+
+    def estimate_starts(self, sbatch_commands, reporter=None):
+        """``estimate_start`` for several requests in one round trip, in order."""
+        commands = list(sbatch_commands)
+        for command in commands:
+            if " --test-only" not in command:
+                raise ValueError("estimate_start only runs sbatch --test-only")
+        if not commands:
+            return []
+        script = f"; echo '{_SEP}'; ".join(f"{c} 2>&1" for c in commands)
         with self._lock:
-            return parse_test_only(self._session.run(sbatch_command + " 2>&1", reporter))
+            sections = self._session.run(script, reporter).split(_SEP)
+        sections += [""] * (len(commands) - len(sections))
+        return [parse_test_only(section) for section in sections[:len(commands)]]
 
 
 def build_snapshot(output, username=None):
@@ -455,6 +517,7 @@ def build_snapshot(output, username=None):
         "models": summarize_models(nodes),
         "pending": pending,
         "queue": queue_summary(pending),
+        "avoided": avoided_nodes(pending, username),
         "fairshare": parse_fairshare(sections[3]),
         "taken_at": time.time(),
     }

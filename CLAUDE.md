@@ -110,8 +110,18 @@ The application follows a modular architecture with separation between business 
   - `free_priority()` / `best_free_account()`: a free job's queue priority is
     ~2000 x the fair-share factor of the account it is submitted under, and free
     partitions accept every account, so the account choice decides the wait
+  - `avoided_nodes()`: how many *other* users have a queued job that excludes
+    each node (`squeue %x`) -- the public hint that a node is faulty
   - **`ClusterInsights` only runs queries** (`sinfo`, `squeue`, `sshare`,
     `sbatch --test-only`). Nothing in this module may submit or cancel a job
+  - **Account names are compared in lower case.** `sbank` prints them in capitals,
+    every Slurm command in lower case; 0.5.0 matched them by exact case and so
+    never found the best account. Test fixtures must use the capitals `sbank` gives
+
+- **node_flags.py** - nodes the user flagged as bad, kept in `QSettings`
+  - Every launch is kept off them (`sbatch --exclude`). A flagged name reaches a
+    shell, so the store refuses anything that is not a plausible host name, even
+    from a hand-edited settings file
 
 - **hpc3_constraints.py** - which launch requests HPC3 accepts (curated, not discovered)
   - `tier_gpu_options(account, use_free)` is what makes the launch form a cascade:
@@ -157,9 +167,11 @@ Each widget corresponds to a page in the main application sidebar:
 - **login_dialog.py** - Initial login dialog for username/password/DUO
 - **vscode_widget.py** - launch and connect to VSCode sessions (sidebar: "Sessions",
   the page the app opens on). The form is a cascade -- tier, account, GPU, GPU
-  count, memory, CPUs, run time -- and under it the free-tier advice: the account
-  with the best queue priority (chosen by default), whether the request fits an
-  idle GPU right now, and Slurm's start estimate on demand
+  count, memory, CPUs, run time, bad nodes to avoid. The "Free-tier outlook" card
+  at the top right holds the advice: the account with the best queue priority
+  (chosen by default), whether the request fits an idle GPU right now, a node
+  other users avoid, and Slurm's start estimate for every GPU model on demand.
+  Keep that card above the fold -- under the form, nobody saw it
 - **task_manager_widget.py** - Slurm job management interface (sidebar: "Jobs")
 - **node_status_widget.py** - paid / free / idle GPUs per model and per node, the
   pending queue, and your fair share per account (sidebar: "GPUs & nodes")
@@ -275,6 +287,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - `tests/test_launch_form.py` — builds the real Sessions form under Qt's offscreen
   platform and clicks through it: no sequence of picks may produce an invalid
   request. It patches `QSettings` to a temp file; keep it that way.
+- `tests/test_node_flags.py` — the remembered bad-node list: survives a restart,
+  tolerates a corrupt settings value, refuses hostile names.
 - `tests/test_environment.py` — a dependency-check script, not a unittest module.
 
 CI runs this suite on **ubuntu, macOS and Windows**. The Windows job matters: the

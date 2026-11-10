@@ -19,20 +19,25 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hpc3_launcher"))
 
-from PyQt5.QtCore import QSettings  # noqa: E402
+from PyQt5.QtCore import Qt, QSettings  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 from modules import cluster_view as cv  # noqa: E402
 from modules import hpc3_constraints as hc  # noqa: E402
+from modules.node_flags import NodeFlagStore  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.vscode_widget import VSCodeWidget, decode_choice, encode_choice  # noqa: E402
 
+# In capitals, exactly as ``sbank`` hands them over -- while every Slurm command
+# (and the fixture's fair-share table) spells them in lower case. Version 0.5.0
+# was tested with lower-case names here and shipped unable to match the two.
 ACCOUNTS = [
-    {"name": "demo", "is_personal": True, "available": 199820},
-    {"name": "pi_lab", "is_personal": False, "available": 1204300},
-    {"name": "pi_lab_gpu", "is_personal": False, "available": 84000},
-    {"name": "pi_lab_gpu32", "is_personal": False, "available": 2310775},
+    {"name": "DEMO", "is_personal": True, "available": 199820},
+    {"name": "PI_LAB", "is_personal": False, "available": 1204300},
+    {"name": "PI_LAB_GPU", "is_personal": False, "available": 84000},
+    {"name": "PI_LAB_GPU32", "is_personal": False, "available": 2310775},
 ]
+BAD_NODE = "hpc3-gpu-n54-00"
 
 
 def load_snapshot():
@@ -124,7 +129,7 @@ class TestOpensOnTheBestFreeRequest(FormTestCase):
 
 class TestNoInvalidCombination(FormTestCase):
     def test_every_free_pick_resolves_to_a_legal_partition(self):
-        for account in [a["name"] for a in ACCOUNTS]:
+        for account in [a["name"].lower() for a in ACCOUNTS]:
             self.pick_account(account)
             for family, gpu_type in self.offered():
                 self.pick_gpu(family, gpu_type)
@@ -172,7 +177,7 @@ class TestNoInvalidCombination(FormTestCase):
     def test_a100_and_gpu32_can_never_meet(self):
         for free in (True, False):
             self.set_tier(free)
-            for account in [a["name"] for a in ACCOUNTS]:
+            for account in [a["name"].lower() for a in ACCOUNTS]:
                 self.pick_account(account)
                 for family, gpu_type in self.offered():
                     self.pick_gpu(family, gpu_type)
@@ -272,6 +277,180 @@ class TestFreeTierAdvice(FormTestCase):
     def test_advice_is_hidden_for_paid(self):
         self.set_tier(False)
         self.assertTrue(self.form.advice_card.isHidden())
+
+
+class TestBadNodes(FormTestCase):
+    def flag_store(self):
+        return NodeFlagStore(self.form._settings)
+
+    def test_a_node_other_users_avoid_is_pointed_out(self):
+        self.pick_gpu("gpu32", "RTX6000")
+        self.assertIn(BAD_NODE, self.form.suspect_label.text())
+        self.assertIn("6 other users", self.form.suspect_label.text())
+        self.assertFalse(self.form.avoid_suspect_btn.isHidden())
+        # It is not in the pool of an A30 request, so it is not mentioned there.
+        self.pick_gpu("gpu", "A30")
+        self.assertTrue(self.form.suspect_label.isHidden())
+
+    def test_one_click_flags_it_and_the_launch_stays_off_it(self):
+        self.pick_gpu("gpu32", "RTX6000")
+        self.form.memory_combo.setCurrentText("16G")
+        self.assertIn(f"Fits right now</b> on {BAD_NODE}", self.form.fit_label.text())
+        self.form.avoid_suspect_btn.click()
+        self.assertEqual(self.form.flags.names(), [BAD_NODE])
+        self.assertTrue(self.form.suspect_label.isHidden())
+        self.assertEqual(self.form.exclude_combo.checked_values(), [BAD_NODE])
+        self.assertIn(f"Kept off {BAD_NODE}", self.form.status_label.text())
+        # The idle GPU on the flagged node no longer counts as somewhere to start.
+        self.assertNotIn("Fits right now", self.form.fit_label.text())
+        self.assertIn("node you flagged", self.form.fit_label.text())
+        with mock.patch.object(self.form, "_do_submit"):
+            self.form.submit_job()
+        self.assertEqual(self.form._pending_submit["exclude_nodes"], [BAD_NODE])
+
+    def test_a_flag_is_remembered_by_the_next_form(self):
+        self.form.flags.flag(BAD_NODE, "GPU 2 dead")
+        again = self.make_form()
+        self.assertEqual(again.exclude_combo.checked_values(), [BAD_NODE])
+        self.assertIn("GPU 2 dead", again.exclude_combo.model().item(0).text())
+        self.assertEqual(self.flag_store().names(), [BAD_NODE])
+
+    def test_ticking_the_picker_is_flagging(self):
+        self.form.partition_nodes = {"free-gpu32": [(BAD_NODE, "mixed"),
+                                                    ("hpc3-gpu-n54-01", "mixed")]}
+        self.form._apply_cascade()
+        model = self.form.exclude_combo.model()
+        rows = {model.item(i).data(Qt.UserRole): model.item(i) for i in range(model.rowCount())}
+        self.assertIn("6 other users avoid it", rows[BAD_NODE].text())
+        self.assertEqual(rows["hpc3-gpu-n54-01"].text(), "hpc3-gpu-n54-01  — 2 other users avoid it")
+        rows["hpc3-gpu-n54-01"].setCheckState(Qt.Checked)
+        self.form.exclude_combo.checked_changed.emit()
+        self.assertEqual(self.flag_store().names(), ["hpc3-gpu-n54-01"])
+        model = self.form.exclude_combo.model()
+        for i in range(model.rowCount()):
+            model.item(i).setCheckState(Qt.Unchecked)
+        self.form.exclude_combo.checked_changed.emit()
+        self.assertEqual(self.flag_store().names(), [])
+        self.assertNotIn("Kept off", self.form.status_label.text())
+
+    def test_a_session_node_can_be_flagged_and_unflagged(self):
+        fetch = mock.patch.object(self.form, "_fetch_config_for")   # no SSH in tests
+        fetch.start()
+        self.addCleanup(fetch.stop)
+        self.form._apply_queue([{"job_id": "1", "status": "RUNNING", "node": BAD_NODE,
+                                 "partition": "free-gpu32"},
+                                {"job_id": "2", "status": "PENDING", "node": None,
+                                 "partition": "free-gpu32"}])
+        self.form.sessions_table.selectRow(1)             # the pending one: no node yet
+        self.assertFalse(self.form.flag_btn.isEnabled())
+        self.form.sessions_table.selectRow(0)
+        self.assertTrue(self.form.flag_btn.isEnabled())
+        with mock.patch("ui.vscode_widget.ask_flag_note", return_value=None):
+            self.form.flag_btn.click()                    # backed out of the prompt
+        self.assertEqual(self.form.flags.names(), [])
+        with mock.patch("ui.vscode_widget.ask_flag_note", return_value="CUDA errors"):
+            self.form.flag_btn.click()
+        self.assertIn("CUDA errors", self.form.flags.describe(BAD_NODE))
+        self.assertEqual(self.form.flag_btn.text(), "Remove flag")
+        self.form.flag_btn.click()
+        self.assertEqual(self.form.flags.names(), [])
+
+    def test_a_flag_for_a_node_the_cluster_no_longer_has_is_not_sent(self):
+        # sbatch rejects --exclude of an unknown node, which would fail every launch.
+        self.form.flags.flag("hpc3-gpu-gone-99")
+        self.form.flags.flag(BAD_NODE)
+        self.assertEqual(self.form._avoided(), [BAD_NODE])
+        self.assertEqual(self.form.flags.names(), ["hpc3-gpu-gone-99", BAD_NODE])
+
+
+class TestCompareGpus(FormTestCase):
+    REPLIES = {"L40S": "2026-11-10T13:02:27", "RTX6000": "2026-11-10T12:58:25",
+               "V100": "2026-11-09T19:41:19", "A30": "2026-11-09T19:41:18", "A100": None}
+
+    def run_comparison(self):
+        """Press the button with Slurm faked; returns the commands it was sent."""
+        sent = []
+
+        class Insights:
+            def estimate_starts(_self, commands):
+                sent.extend(commands)
+                out = []
+                for command in commands:
+                    model = command.split("--gres=gpu:")[1].split(":")[0]
+                    start = self.REPLIES[model]
+                    out.append({"ok": bool(start), "start": start or "", "node": "n1",
+                                "message": "" if start else "node configuration unavailable"})
+                return out
+
+        self.form.insights = Insights()
+        self.form._apply_cascade()
+        self.form.compare_starts()
+        self.form._compare_worker.wait(5000)
+        self.app.processEvents()
+        return sent
+
+    def rows(self):
+        return [(model, when, tile.isEnabled(), tile.isChecked())
+                for _family, model, tile, when in self.form._compare_rows]
+
+    def test_every_model_is_asked_about_the_same_size(self):
+        self.form.flags.flag(BAD_NODE)
+        self.pick_gpu("gpu32", "RTX6000")
+        self.form.gpu_count_spinbox.setValue(4)
+        self.form.memory_combo.setCurrentText("48G")
+        sent = self.run_comparison()
+        self.assertEqual(len(sent), 5)
+        for command in sent:
+            self.assertIn("sbatch --test-only ", command)
+            self.assertIn(" --mem=48G ", command)
+            self.assertIn(" --account=pi_lab_gpu ", command)
+            self.assertIn(f" --exclude={BAD_NODE}", command)
+        by_model = {c.split("--gres=gpu:")[1].split(" ")[0]: c for c in sent}
+        # Each on its own partition, cores by that partition's rule, GPU count
+        # clamped to what one node of that model has.
+        self.assertIn(" -p free-gpu32 ", by_model["RTX6000:4"])
+        self.assertIn(" --cpus-per-task=8 ", by_model["RTX6000:4"])
+        self.assertIn(" -p free-gpu ", by_model["A100:2"])
+        self.assertIn(" --cpus-per-task=6 ", by_model["A100:2"])    # 48 GB / 9 per core
+        self.assertIn(" --cpus-per-task=8 ", by_model["A30:4"])     # 2 cores per GPU
+
+    def test_soonest_first_and_one_click_switches(self):
+        self.pick_gpu("gpu32", "RTX6000")
+        self.run_comparison()
+        self.assertFalse(self.form.compare_box.isHidden())
+        rows = self.rows()
+        self.assertEqual([r[0] for r in rows], ["A30", "V100", "RTX6000", "L40S", "A100"])
+        self.assertEqual(rows[-1][1:], ("won't run", False, False))
+        self.assertEqual([r[3] for r in rows], [False, False, True, False, False])
+        self.form._compare_rows[0][2].click()                # the A30 tile
+        req = self.form._request()
+        self.assertEqual((req["gpu_type"], req["partition"]), ("A30", "free-gpu"))
+        self.assertFalse(self.form.compare_box.isHidden())   # same size: still valid
+        self.assertEqual([r[3] for r in self.rows()], [True, False, False, False, False])
+        self.form._compare_rows[0][2].click()                # clicking it again changes nothing
+        self.assertEqual(self.form._request()["gpu_type"], "A30")
+        self.assertEqual([r[3] for r in self.rows()], [True, False, False, False, False])
+
+    def test_waits_are_short_to_read(self):
+        from datetime import datetime
+        from ui.vscode_widget import friendly_wait
+        now = datetime(2026, 11, 9, 19, 21, 0)
+        for iso, text in (("2026-11-09T19:21:30", "now"), ("2026-11-09T19:41:18", "in 20 min"),
+                          ("2026-11-10T06:09:34", "in 11 h"), ("2026-11-10T12:58:25", "in 18 h"),
+                          ("2026-11-13T11:23:25", "in 3.7 days"), ("2026-11-09T18:00:00", "now"),
+                          ("", ""), ("N/A", "N/A")):
+            with self.subTest(iso=iso):
+                self.assertEqual(friendly_wait(iso, now), text)
+
+    def test_estimates_are_dropped_when_the_size_changes(self):
+        self.pick_gpu("gpu32", "RTX6000")
+        self.run_comparison()
+        self.form.memory_combo.setCurrentText("96G")
+        self.assertTrue(self.form.compare_box.isHidden())
+
+    def test_not_offered_for_a_cpu_only_request(self):
+        self.pick_gpu("cpu", None)
+        self.assertTrue(self.form.compare_btn.isHidden())
 
 
 class TestSubmit(FormTestCase):
