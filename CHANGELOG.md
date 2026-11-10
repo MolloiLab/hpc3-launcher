@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.2](https://github.com/MolloiLab/hpc3-launcher/compare/v0.6.1...v0.6.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **ui:** one thing per screen, and stay off suspect nodes by default ([#22](https://github.com/MolloiLab/hpc3-launcher/issues/22)) ([d358039](https://github.com/MolloiLab/hpc3-launcher/commit/d35803969d8bd63df716b3ff4e99f34c44063e8d))
+* **ui:** rebuild the layout the way T3 Code is built, not just recoloured ([#20](https://github.com/MolloiLab/hpc3-launcher/issues/20)) ([6417e28](https://github.com/MolloiLab/hpc3-launcher/commit/6417e287ae96b0eabd38dadce87d86f95cc0862b))
+
 ## [0.6.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.6.0...v0.6.1) (2026-11-10)
 
 
