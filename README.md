@@ -2,10 +2,10 @@
 
 A desktop app for working with UCI's **HPC3** cluster without living in the terminal:
 
-- **Job Management** — view, submit, and cancel Slurm jobs
-- **Node Status** — live CPU / memory / GPU usage across nodes
-- **VSCode** — launch one or **multiple** remote VSCode sessions (each writes its own `~/.ssh/config` entry, so `Remote-SSH: Connect to Host…` just works)
-- **Account Balance** — your SU balance per account
+- **Sessions** — launch one or **multiple** remote VSCode sessions (each writes its own `~/.ssh/config` entry, so `Remote-SSH: Connect to Host…` just works). The form only lets you build a request HPC3 will accept, and for free-tier jobs it picks the account with your best queue priority, tells you whether the request fits a GPU that is idle right now, and can ask Slurm for a start-time estimate
+- **Jobs** — view, submit, and cancel Slurm jobs
+- **GPUs & nodes** — for every GPU model and node: how many GPUs paid jobs hold, how many free jobs hold, and how many are idle — plus the waiting queue and your priority in it
+- **Balance** — your SU balance per account
 
 Sign in once with your UCInetID + Duo; the app installs an SSH key so every later launch is password-less.
 

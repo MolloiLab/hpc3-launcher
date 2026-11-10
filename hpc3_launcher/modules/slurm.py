@@ -84,7 +84,7 @@ class SlurmManager(QObject):
                 
             try:
                 # Use squeue command to get job information
-                cmd = f"squeue -u {self.username} -o '%A|%j|%T|%M|%L|%D|%C|%R' -h"
+                cmd = f"squeue -u {self.username} -o '%A|%j|%T|%M|%L|%D|%C|%R|%P' -h"
                 logging.debug(f"[SlurmManager] Executing command: {cmd}")
                 stdin, stdout, stderr = client.exec_command(cmd)
                 
@@ -96,8 +96,9 @@ class SlurmManager(QObject):
                         continue
                         
                     parts = line.split('|')
-                    if len(parts) == 8:
+                    if len(parts) >= 8:
                         job = {
+                            'partition': parts[8] if len(parts) > 8 else '',
                             'id': parts[0],
                             'name': parts[1],
                             'state': parts[2],

@@ -160,6 +160,91 @@ def _write_ssh_config(path, text):
         logger.warning("could not chmod %s: %s", path, e)
 
 
+# One row per queued session. Pipe-separated because a PENDING job's node field is
+# empty, which a whitespace split can't tell from a missing column.
+VSCODE_QUEUE_FORMAT = "%i|%T|%N|%P|%Q|%r|%S|%a|%b|%l"
+
+
+def parse_vscode_queue(output):
+    """Parse ``squeue -o VSCODE_QUEUE_FORMAT`` into the session dicts the UI lists."""
+    jobs = []
+    for line in (output or "").strip().splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        parts += [""] * (10 - len(parts))
+        start = parts[6] if parts[6] not in ("", "N/A", "Unknown") else None
+        jobs.append({
+            'job_id': parts[0],
+            'job_name': 'vscode-sshd',
+            'status': parts[1],
+            'node': clean_node_name(parts[2] or None),
+            'partition': parts[3] or None,
+            'priority': int(parts[4]) if parts[4].isdigit() else None,
+            'reason': parts[5] if parts[5] not in ("", "None") else None,
+            'start_estimate': start,
+            'account': parts[7] or None,
+            'tres': parts[8] if parts[8] not in ("", "N/A") else None,
+            'time_limit': parts[9] or None,
+        })
+    return jobs
+
+
+_SBATCH_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
+
+
+def build_sbatch_command(cpus=2, memory="4G", gpu_type=None, gpu_count=1, account=None,
+                         time_limit="2:00:00", use_free=False, exclude_nodes=None,
+                         family=None, test_only=False):
+    """The exact ``sbatch`` line for a VSCode session.
+
+    One builder for both the real submission and the ``--test-only`` start-time
+    estimate, so an estimate can never describe a different job from the one that
+    would be launched. Every interpolated value is checked first: this string is
+    run by a shell on the login node.
+    """
+    if not account:
+        raise ValueError("Billing account must be specified")
+    exclude_nodes = clean_exclude_list(exclude_nodes)
+    for name, value in (("account", account), ("memory", memory),
+                        ("time limit", time_limit), ("GPU type", gpu_type or "x")):
+        if not _SBATCH_VALUE_RE.match(str(value)):
+            raise ValueError(f"invalid {name}: {value!r}")
+    cpus, gpu_count = int(cpus), int(gpu_count)
+
+    # A GPU account (suffix `gpu`/`gpu32`) with nothing said about hardware ->
+    # request "any GPU" so the GPU account isn't accidentally used CPU-only. An
+    # explicit family (the launcher always sends one) is taken at its word.
+    if gpu_type is None and family is None and account_family(account) in ("gpu", "gpu32"):
+        gpu_type = ""  # "" sentinel -> any GPU of the account's family
+
+    cmd = "sbatch --test-only" if test_only else "sbatch"
+    cmd += f" --cpus-per-task={cpus}"
+    cmd += f" --mem={memory}"
+    cmd += f" --time={time_limit}"
+    cmd += f" --account={account}"
+
+    # Partition is derived from the curated HPC3 model (hpc3_constraints): a
+    # specific GPU model pins the family (so RTX6000 -> gpu32, not gpu), otherwise
+    # the requested family or the account suffix decides; `use_free` then picks
+    # the free vs paid partition within that family. This replaces the old
+    # hardcoded "L40S -> gpu32, everything else -> gpu" rule that mis-routed
+    # RTX6000 and failed with "Requested node configuration is not available".
+    cmd += f" -p {partition_for(account, gpu_type, use_free, family)}"
+
+    # GPU resource request (only when a GPU was actually requested).
+    if gpu_type == "":      # any GPU of the family
+        cmd += f" --gres=gpu:{gpu_count}"
+    elif gpu_type is not None:  # specific model, e.g. gpu:RTX6000:1
+        cmd += f" --gres=gpu:{gpu_type}:{gpu_count}"
+
+    # Keep the job off nodes the user has flagged (e.g. one with a broken GPU).
+    if exclude_nodes:
+        cmd += f" --exclude={','.join(exclude_nodes)}"
+
+    return cmd + " /opt/rcic/scripts/vscode-sshd.sh"
+
+
 class VSCodeManager(QObject):
     """
     VSCode server manager responsible for submitting and managing VSCode server jobs
@@ -331,7 +416,7 @@ class VSCodeManager(QObject):
             self.connect_ssh()
             raise Exception(f"Command execution failed: {str(e)}")
     
-    def submit_vscode_job(self, cpus=2, memory="4G", gpu_type=None, gpu_count=1, account=None, time_limit="2:00:00", use_free=False, exclude_nodes=None):
+    def submit_vscode_job(self, cpus=2, memory="4G", gpu_type=None, gpu_count=1, account=None, time_limit="2:00:00", use_free=False, exclude_nodes=None, family=None):
         """
         Submit VSCode job to HPC
 
@@ -346,55 +431,28 @@ class VSCodeManager(QObject):
             time_limit: Time limit in HH:MM:SS format
             use_free: Whether to use free resources
             exclude_nodes: Node names Slurm must not place the job on (--exclude)
+            family: Partition family ("gpu", "gpu32", "cpu", "anygpu"); None means
+                    the account's own. Free jobs may name a family other than the
+                    account's, because free partitions accept every account.
 
         Returns:
             bool: Whether the submission was successful
         """
-        if not account:
-            raise ValueError("Billing account must be specified")
-        exclude_nodes = clean_exclude_list(exclude_nodes)  # before touching the network
+        # Validates everything that reaches the shell, before touching the network.
+        cmd = build_sbatch_command(
+            cpus=cpus, memory=memory, gpu_type=gpu_type, gpu_count=gpu_count,
+            account=account, time_limit=time_limit, use_free=use_free,
+            exclude_nodes=exclude_nodes, family=family)
+        exclude_nodes = clean_exclude_list(exclude_nodes)
+        account_contains_gpu = account_family(account) in ("gpu", "gpu32")
+        if gpu_type is None and family is None and account_contains_gpu:
+            gpu_type = ""  # mirrors build_sbatch_command, for the labels below
 
         # Connect to SSH
         if not self.connect_ssh():
             raise Exception("Unable to connect to SSH server")
         
         try:
-            # Build sbatch command
-            cmd = "sbatch"
-            
-            # Add resource request parameters
-            cmd += f" --cpus-per-task={cpus}"
-            cmd += f" --mem={memory}"
-            cmd += f" --time={time_limit}"
-            cmd += f" --account={account}"
-            
-            # A GPU account (suffix `gpu`/`gpu32`) but no GPU type chosen -> request
-            # "any GPU" so the GPU account isn't accidentally used CPU-only.
-            account_contains_gpu = account_family(account) in ("gpu", "gpu32")
-            if gpu_type is None and account_contains_gpu:
-                gpu_type = ""  # "" sentinel -> any GPU of the account's family
-
-            # Partition is derived from the curated HPC3 model (hpc3_constraints):
-            # a specific GPU model pins the family (so RTX6000 -> gpu32, not gpu),
-            # otherwise the account suffix decides; `use_free` then picks the free
-            # vs paid partition within that family. This replaces the old hardcoded
-            # "L40S -> gpu32, everything else -> gpu" rule that mis-routed RTX6000
-            # and failed with "Requested node configuration is not available".
-            cmd += f" -p {partition_for(account, gpu_type, use_free)}"
-
-            # GPU resource request (only when a GPU was actually requested).
-            if gpu_type == "":      # any GPU of the family
-                cmd += f" --gres=gpu:{gpu_count}"
-            elif gpu_type is not None:  # specific model, e.g. gpu:RTX6000:1
-                cmd += f" --gres=gpu:{gpu_type}:{gpu_count}"
-
-            # Keep the job off nodes the user has flagged (e.g. one with a broken GPU).
-            if exclude_nodes:
-                cmd += f" --exclude={','.join(exclude_nodes)}"
-
-            # Add VSCode script path
-            cmd += " /opt/rcic/scripts/vscode-sshd.sh"
-            
             # Submit job
             logger.info(f"Submit job command: {cmd}")
             output = self.execute_ssh_command(cmd)
@@ -438,7 +496,7 @@ class VSCodeManager(QObject):
                     display_gpu_type = "Any GPU"
                 else:
                     display_gpu_type = f"{gpu_type} GPU"
-            elif account_contains_gpu:
+            elif account_contains_gpu and family is None:
                 display_gpu_type = "Any GPU (auto-selected)"
 
             # Record job information
@@ -453,6 +511,7 @@ class VSCodeManager(QObject):
                 'time_limit': time_limit,
                 'submit_time': time.time(),
                 'use_free': use_free,  # Record whether free resources are used
+                'partition': partition_for(account, gpu_type, use_free, family),
                 'exclude_nodes': exclude_nodes,
                 'command': cmd,  # Record submission command
                 'script_path': "/opt/rcic/scripts/vscode-sshd.sh"  # Use system script path
@@ -760,19 +819,8 @@ class VSCodeManager(QObject):
         from here means "no sessions", and sync_ssh_config prunes on that basis.
         """
         output = self.execute_ssh_command(
-            f"squeue -u {self.username} -h -n vscode-sshd -o '%i %T %N'")
-        jobs = []
-        for line in output.strip().splitlines():
-            parts = line.split()
-            if len(parts) < 2 or not parts[0].isdigit():
-                continue
-            jobs.append({
-                'job_id': parts[0],
-                'job_name': 'vscode-sshd',
-                'status': parts[1],
-                'node': clean_node_name(parts[2] if len(parts) > 2 else None),
-            })
-        return jobs
+            f"squeue -u {self.username} -h -n vscode-sshd -o '{VSCODE_QUEUE_FORMAT}'")
+        return parse_vscode_queue(output)
 
     def get_running_vscode_jobs(self):
         """

@@ -17,7 +17,7 @@ import logging
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QDialog, QLineEdit, QPushButton, QFormLayout, QMessageBox, QVBoxLayout,
-    QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QGroupBox, QGridLayout,
+    QListWidget, QListWidgetItem, QLabel, QGridLayout, QFrame,
 )
 
 from core.ssh_session import SSHWorker, SSHError, probe_host, HPC_SERVER
@@ -42,7 +42,7 @@ class LoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Sign in to HPC3")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(500)
         self.selected_user = None
         self.node_info = None          # read by main() after a successful exec
         self._worker = None
@@ -58,46 +58,73 @@ class LoginDialog(QDialog):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 26, 28, 20)
+        layout.setSpacing(16)
+
+        title = QLabel("Sign in to HPC3")
+        title.setProperty("role", "title")
+        layout.addWidget(title)
+        subtitle = QLabel(f"Connects to {HPC_SERVER} with a key kept on this computer.")
+        subtitle.setProperty("role", "subtitle")
+        layout.addWidget(subtitle)
 
         # Saved users
-        saved_group = QGroupBox("Saved accounts")
-        saved_layout = QGridLayout(saved_group)
+        saved = QFrame()
+        saved.setProperty("card", True)
+        saved_layout = QGridLayout(saved)
+        saved_layout.setContentsMargins(18, 16, 18, 16)
+        saved_layout.setVerticalSpacing(10)
+        saved_title = QLabel("Saved accounts")
+        saved_title.setProperty("role", "section")
+        saved_layout.addWidget(saved_title, 0, 0, 1, 2)
         self.user_list = QListWidget()
-        self.user_list.setMinimumHeight(110)
+        self.user_list.setMinimumHeight(92)
+        self.user_list.setMaximumHeight(132)
         self._populate_user_list()
         self.user_list.itemClicked.connect(self.on_user_selected)
         self.user_list.itemDoubleClicked.connect(lambda _i: self.login_with_key())
-        saved_layout.addWidget(self.user_list, 0, 0, 1, 2)
+        saved_layout.addWidget(self.user_list, 1, 0, 1, 2)
 
-        self.key_login_button = QPushButton("Sign in with saved key")
+        self.key_login_button = QPushButton("Sign in")
+        self.key_login_button.setProperty("variant", "primary")
+        self.key_login_button.setDefault(True)
         self.key_login_button.clicked.connect(self.login_with_key)
         self.key_login_button.setEnabled(False)
         self.delete_button = QPushButton("Forget account")
+        self.delete_button.setProperty("variant", "danger")
         self.delete_button.clicked.connect(self.delete_selected_user)
-        saved_layout.addWidget(self.key_login_button, 1, 0)
-        saved_layout.addWidget(self.delete_button, 1, 1)
-        layout.addWidget(saved_group)
+        saved_layout.addWidget(self.key_login_button, 2, 0)
+        saved_layout.addWidget(self.delete_button, 2, 1)
+        saved_layout.setColumnStretch(0, 2)
+        saved_layout.setColumnStretch(1, 1)
+        layout.addWidget(saved)
 
         # New account
-        new_group = QGroupBox("New account (first time on this computer)")
-        form = QFormLayout(new_group)
+        new = QFrame()
+        new.setProperty("card", True)
+        form = QFormLayout(new)
+        form.setContentsMargins(18, 16, 18, 16)
+        form.setVerticalSpacing(10)
+        form.setHorizontalSpacing(12)
+        new_title = QLabel("First time on this computer")
+        new_title.setProperty("role", "section")
+        form.addRow(new_title)
         self.uc_id_input = QLineEdit()
         self.uc_id_input.setPlaceholderText("your UCInetID")
-        form.addRow("UCInetID:", self.uc_id_input)
+        form.addRow("UCInetID", self.uc_id_input)
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.returnPressed.connect(self.handle_new_user_login)
-        form.addRow("Password:", self.password_input)
+        form.addRow("Password", self.password_input)
         self.new_user_button = QPushButton("Sign in and remember me")
-        self.new_user_button.setMinimumHeight(36)
         self.new_user_button.clicked.connect(self.handle_new_user_login)
         form.addRow(self.new_user_button)
         hint = QLabel("You'll get a Duo Push — approve it on your phone. "
                       "Your password is used once to install a key and is never stored.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setProperty("role", "muted")
         form.addRow(hint)
-        layout.addWidget(new_group)
+        layout.addWidget(new)
 
         # Live status surface (shared by both flows)
         self.status_view = LiveStatusView(self)

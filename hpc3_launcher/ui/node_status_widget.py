@@ -1,430 +1,423 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""The "GPUs & nodes" page: who holds each GPU right now, and what is left.
 
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                           QTableWidget, QTableWidgetItem, QTabWidget,
-                           QHeaderView, QStyle, QProgressBar, QSplitter, QFrame, QGridLayout)
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QDateTime, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QColor, QIcon, QBrush
+A paid partition and its free mirror are the same machines, so the useful
+question about a GPU is not "is it used?" but "by a paid job, a free job, or
+nobody?" -- and, for the idle ones, "could a job actually start there?" (often
+not: the node's cores are already taken). This page answers both, per GPU model
+and per node, from ``modules/cluster_view``.
+"""
+
 import logging
 import time
-from modules.node_status import NodeStatusManager
-from modules.auth import HPC_SERVER, get_all_existing_users
 
-# Configure logging
+from PyQt5.QtCore import QTimer, pyqtSlot
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QCheckBox, QTableWidgetItem,
+)
+
+from modules import cluster_view as cv
+from modules import hpc3_constraints as hc
+from core.ssh_session import SSHWorker
+from ui import theme
+from ui.status_view import LiveStatusView
+from ui.components import (
+    PageHeader, StatTile, SegmentBar, SegmentedControl, Legend, SortItem,
+    PillDelegate, BarDelegate, DATA_ROLE, button, label, divider, make_table,
+    page_layout,
+)
+
 logger = logging.getLogger('NodeStatusWidget')
 
-class RefreshWorker(QThread):
-    """Thread for refreshing data in the background"""
-    
-    # Define signals
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
-    nodes_data = pyqtSignal(list)
-    
-    def __init__(self, node_manager):
-        """Initialize refresh thread"""
-        super().__init__()
-        self.node_manager = node_manager
-        self._stopped = False
-    
-    def run(self):
-        """Thread execution function"""
-        try:
-            if self._stopped:
-                return
-                
-            # Get node data
-            nodes = self.node_manager.get_all_nodes()
-            if nodes:
-                self.nodes_data.emit(nodes)
-            else:
-                self.error.emit("Failed to retrieve node data")
-        except Exception as e:
-            logger.error(f"Failed to refresh data: {str(e)}")
-            self.error.emit(f"Failed to refresh data: {str(e)}")
-        finally:
-            self.finished.emit()
-    
-    def stop(self):
-        """Stop thread"""
-        self._stopped = True
-        if self.isRunning():
-            self.wait(1000)
-            if self.isRunning():
-                self.terminate()
+AUTO_REFRESH_MS = 60_000
+
+
+def _node_state_tone(state):
+    base = cv.base_state(state)
+    if base == "idle":
+        return "ok"
+    if base in ("mixed", "allocated", "completing"):
+        return "info"
+    return "danger"
+
+
+def _tier_tone(text):
+    return "free" if text.lower().startswith("free") else "paid"
+
+
+def _gb(mb):
+    return int(round(mb / 1024.0))
+
 
 class NodeStatusWidget(QWidget):
-    """Node status component, displays HPC cluster node information and availability"""
-    
-    def __init__(self, parent=None, username=None):
+    """GPU availability by tier, plus the plain node list."""
+
+    def __init__(self, parent=None, username=None, insights=None):
         super().__init__(parent)
-        
-        # User information
         self.username = username
-        self.node_manager = None
-        
-        # Last refresh time
-        self.last_refresh_time = None
-        
-        # Node data
-        self.nodes_data = []
-        
-        # Refresh worker thread
-        self.refresh_worker = None
-        
-        # Initialize node manager
-        self.init_node_manager()
-        
-        # Initialize UI
+        self.insights = insights
+        self.snapshot = None
+        self._worker = None
+        self._last_refresh = 0.0
+
         self.init_ui()
-        
-        # Timer to refresh time display
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.update_refresh_time)
-        self.refresh_timer.start(10000)  # Every 10 seconds to update time display
-        
-        # Load data
-        self.refresh_data()
-    
-    def init_node_manager(self):
-        """Initialize node manager"""
-        if not self.username:
-            return
-        
-        # Get SSH key path
-        users = get_all_existing_users()
-        key_path = None
-        
-        for user in users:
-            if user['username'] == self.username:
-                key_path = user['key_path']
-                break
-        
-        if not key_path:
-            return
-        
-        # Create node manager
-        self.node_manager = NodeStatusManager(
-            hostname=HPC_SERVER,
-            username=self.username,
-            key_path=key_path
-        )
-        
-        # Connect signals
-        self.node_manager.nodes_updated.connect(self.update_nodes_data)
-        self.node_manager.error_occurred.connect(self.show_error)
-    
+
+        self._auto_timer = QTimer(self)
+        self._auto_timer.timeout.connect(self._auto_refresh)
+        self._auto_timer.start(AUTO_REFRESH_MS)
+        self._age_timer = QTimer(self)
+        self._age_timer.timeout.connect(self._update_age)
+        self._age_timer.start(10_000)
+
+        if self.insights is None:
+            self.header.set_subtitle("No SSH key for this user — sign in again to see the cluster.")
+            self.refresh_btn.setEnabled(False)
+
+    # --- UI --------------------------------------------------------------------
+
     def init_ui(self):
-        """Initialize UI components"""
-        main_layout = QVBoxLayout(self)
-        
-        # Top control bar
-        control_layout = QHBoxLayout()
-        
-        # Refresh button with icon
-        self.refresh_btn = QPushButton("Refresh Node Info")
-        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.refresh_btn.clicked.connect(self.refresh_data)
-        control_layout.addWidget(self.refresh_btn)
-        
-        # Refresh status indicator
-        self.refresh_indicator = QLabel("Ready")
-        self.refresh_indicator.setStyleSheet("color: green;")
-        control_layout.addWidget(self.refresh_indicator)
-        
-        control_layout.addStretch()
-        
-        # Overall statistics
-        self.stats_label = QLabel("Total Nodes: 0 | CPU Usage: 0/0 | GPU Usage: 0/0")
-        control_layout.addWidget(self.stats_label)
-        
-        control_layout.addStretch()
-        
-        # Refresh time display
-        self.time_label = QLabel("Not refreshed yet")
-        control_layout.addWidget(self.time_label)
-        
-        # Add control bar to main layout
-        main_layout.addLayout(control_layout)
-        
-        # Create tabs
-        tabs = QTabWidget()
-        
-        # GPU nodes tab (create GPU nodes tab first, place it in the first position)
+        outer = page_layout(self)
+
+        self.header = PageHeader(
+            "GPUs & nodes",
+            "Who holds each GPU right now: paid jobs, free jobs, or nobody.")
+        self.time_label = label("", "muted")
+        self.header.add_action(self.time_label)
+        self.refresh_btn = button("Refresh", None, self.refresh_data)
+        self.header.add_action(self.refresh_btn)
+        outer.addWidget(self.header)
+
+        # One tile per GPU model.
+        self.tiles_row = QHBoxLayout()
+        self.tiles_row.setSpacing(12)
+        self.tiles = {}
+        for family in ("gpu32", "gpu"):
+            for model in hc._FAMILY_MODEL_ORDER[family]:
+                vram = hc.GPU_MODELS[model]["vram_gb"]
+                tile = StatTile(f"{model.upper()} · {vram} GB", "—", "")
+                tile.bar = SegmentBar()
+                tile.extra.addWidget(tile.bar)
+                tile.split = label("", "faint")
+                tile.extra.addWidget(tile.split)
+                self.tiles[model] = tile
+                self.tiles_row.addWidget(tile, 1)
+        outer.addLayout(self.tiles_row)
+
+        outer.addWidget(Legend([("gpu_paid", "Paid job"), ("gpu_free", "Free job"),
+                                ("gpu_idle", "Idle")]))
+
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs, 1)
+
+        # --- GPU nodes tab ---
         gpu_tab = QWidget()
         gpu_layout = QVBoxLayout(gpu_tab)
-        
-        self.gpu_nodes_table = QTableWidget()
-        self.gpu_nodes_table.setColumnCount(5)
-        self.gpu_nodes_table.setHorizontalHeaderLabels([
-            "Node Name", "CPU Usage/Total", "Memory Usage", 
-            "GPU Type", "GPU Usage/Total"
-        ])
-        self.gpu_nodes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.gpu_nodes_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.gpu_nodes_table.setSortingEnabled(True)
-        
-        gpu_layout.addWidget(self.gpu_nodes_table)
-        
-        # All nodes tab
-        all_nodes_tab = QWidget()
-        all_layout = QVBoxLayout(all_nodes_tab)
-        
-        self.all_nodes_table = QTableWidget()
-        self.all_nodes_table.setColumnCount(5)
-        self.all_nodes_table.setHorizontalHeaderLabels([
-            "Node Name", "CPU Usage/Total", "Memory Usage", 
-            "GPU Type", "GPU Usage/Total"
-        ])
-        self.all_nodes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.all_nodes_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.all_nodes_table.setSortingEnabled(True)
-        
-        all_layout.addWidget(self.all_nodes_table)
-        
-        # Add tabs, GPU nodes displayed first
-        tabs.addTab(gpu_tab, "GPU Nodes")
-        tabs.addTab(all_nodes_tab, "All Nodes")
-        
-        # Add tabs to main layout
-        main_layout.addWidget(tabs)
-        
-        # Bottom status bar
-        status_layout = QHBoxLayout()
-        
-        self.status_label = QLabel("Ready")
-        status_layout.addWidget(self.status_label)
-        
-        # Add status bar to main layout
-        main_layout.addLayout(status_layout)
-    
-    def update_refresh_time(self):
-        """Update refresh time display"""
-        if self.last_refresh_time:
-            time_str = self.last_refresh_time.toString("yyyy-MM-dd hh:mm:ss")
-            self.time_label.setText(f"Last refresh: {time_str}")
-            
-            # Calculate time since last refresh
-            now = QDateTime.currentDateTime()
-            secs = self.last_refresh_time.secsTo(now)
-            
-            # Set color based on time
-            if secs < 60:  # Within 1 minute
-                self.time_label.setStyleSheet("color: green;")
-            elif secs < 300:  # Within 5 minutes
-                self.time_label.setStyleSheet("color: orange;")
-            else:  # More than 5 minutes
-                self.time_label.setStyleSheet("color: red;")
-    
-    @pyqtSlot()
-    def refresh_data(self):
-        """Refresh node data"""
-        if not self.node_manager:
-            self.show_error("Node manager not set, unable to retrieve data")
-            return
-        
-        # Update UI status
-        self.refresh_btn.setEnabled(False)
-        self.refresh_indicator.setText("Refreshing...")
-        self.refresh_indicator.setStyleSheet("color: orange;")
-        
-        # Safely stop existing thread
-        if self.refresh_worker and self.refresh_worker.isRunning():
-            self.refresh_worker.stop()
-        
-        # Create new refresh thread
-        self.refresh_worker = RefreshWorker(self.node_manager)
-        
-        # Connect signals
-        self.refresh_worker.finished.connect(self.on_refresh_finished)
-        self.refresh_worker.error.connect(self.show_error)
-        self.refresh_worker.nodes_data.connect(self.update_nodes_data)
-        
-        # Start thread
-        self.refresh_worker.start()
-        
-        # Update refresh time
-        self.last_refresh_time = QDateTime.currentDateTime()
-        self.update_refresh_time()
-    
-    def on_refresh_finished(self):
-        """Callback function when refresh is finished"""
-        # Update UI status
-        self.refresh_btn.setEnabled(True)
-        self.refresh_indicator.setText("Ready")
-        self.refresh_indicator.setStyleSheet("color: green;")
-    
-    @pyqtSlot(list)
-    def update_nodes_data(self, nodes_data):
-        """Update node data"""
-        if not nodes_data:
-            return
-        
-        self.nodes_data = nodes_data
-        
-        # Update statistics
-        self.update_stats()
-        
-        # Update all nodes table
-        self.update_all_nodes_table()
-        
-        # Update GPU nodes table
-        self.update_gpu_nodes_table()
-    
-    def update_stats(self):
-        """Update statistics"""
-        if not self.nodes_data:
-            return
-        
-        # Calculate basic statistics
-        total_nodes = len(self.nodes_data)
-        
-        total_cpus = sum(n['total_cpus'] for n in self.nodes_data)
-        used_cpus = sum(n['alloc_cpus'] for n in self.nodes_data)
-        
-        gpu_nodes = [n for n in self.nodes_data if n['has_gpu']]
-        total_gpus = sum(n['gpu_count'] for n in gpu_nodes)
-        used_gpus = sum(n['used_gpus'] for n in gpu_nodes)
-        
-        # Update label
-        stats_text = f"Total Nodes: {total_nodes} | CPU Usage: {used_cpus}/{total_cpus} | "
-        stats_text += f"GPU Usage: {used_gpus}/{total_gpus}"
-        self.stats_label.setText(stats_text)
-    
-    def update_all_nodes_table(self):
-        """Update all nodes table"""
-        self.all_nodes_table.setSortingEnabled(False)
-        self.all_nodes_table.setRowCount(0)
-        
-        if not self.nodes_data:
-            return
-        
-        # Add a row for each node
-        for row, node in enumerate(self.nodes_data):
-            self.all_nodes_table.insertRow(row)
-            
-            # Node name
-            name_item = QTableWidgetItem(node['name'])
-            # Set color of node name based on state
-            self.set_color_by_state(name_item, node['state'])
-            self.all_nodes_table.setItem(row, 0, name_item)
-            
-            # CPU Usage/Total
-            cpu_text = f"{node['alloc_cpus']}/{node['total_cpus']}"
-            cpu_item = QTableWidgetItem(cpu_text)
-            self.set_color_by_usage(cpu_item, node['cpu_usage'])
-            self.all_nodes_table.setItem(row, 1, cpu_item)
-            
-            # Memory Usage
-            mem_text = f"{node['alloc_mem']}/{node['memory']}"
-            mem_item = QTableWidgetItem(mem_text)
-            self.set_color_by_usage(mem_item, node['memory_usage'])
-            self.all_nodes_table.setItem(row, 2, mem_item)
-            
-            # GPU Type
-            gpu_type = node['gpu_type'] if node['has_gpu'] else "N/A"
-            self.all_nodes_table.setItem(row, 3, QTableWidgetItem(gpu_type))
-            
-            # GPU Usage/Total
-            if node['has_gpu']:
-                gpu_text = f"{node['used_gpus']}/{node['gpu_count']}"
-                gpu_item = QTableWidgetItem(gpu_text)
-                self.set_color_by_usage(gpu_item, node['gpu_usage'])
-            else:
-                gpu_text = "N/A"
-                gpu_item = QTableWidgetItem(gpu_text)
-            self.all_nodes_table.setItem(row, 4, gpu_item)
-        
-        self.all_nodes_table.setSortingEnabled(True)
-    
-    def update_gpu_nodes_table(self):
-        """Update GPU nodes table"""
-        self.gpu_nodes_table.setSortingEnabled(False)
-        self.gpu_nodes_table.setRowCount(0)
-        
-        if not self.nodes_data:
-            return
-        
-        # Filter GPU nodes
-        gpu_nodes = [n for n in self.nodes_data if n['has_gpu']]
-        
-        # Add a row for each GPU node
-        for row, node in enumerate(gpu_nodes):
-            self.gpu_nodes_table.insertRow(row)
-            
-            # Node name
-            name_item = QTableWidgetItem(node['name'])
-            # Set color of node name based on state
-            self.set_color_by_state(name_item, node['state'])
-            self.gpu_nodes_table.setItem(row, 0, name_item)
-            
-            # CPU Usage/Total
-            cpu_text = f"{node['alloc_cpus']}/{node['total_cpus']}"
-            cpu_item = QTableWidgetItem(cpu_text)
-            self.set_color_by_usage(cpu_item, node['cpu_usage'])
-            self.gpu_nodes_table.setItem(row, 1, cpu_item)
-            
-            # Memory Usage
-            mem_text = f"{node['alloc_mem']}/{node['memory']}"
-            mem_item = QTableWidgetItem(mem_text)
-            self.set_color_by_usage(mem_item, node['memory_usage'])
-            self.gpu_nodes_table.setItem(row, 2, mem_item)
-            
-            # GPU Type
-            self.gpu_nodes_table.setItem(row, 3, QTableWidgetItem(node['gpu_type']))
-            
-            # GPU Usage/Total
-            gpu_text = f"{node['used_gpus']}/{node['gpu_count']}"
-            gpu_item = QTableWidgetItem(gpu_text)
-            self.set_color_by_usage(gpu_item, node['gpu_usage'])
-            self.gpu_nodes_table.setItem(row, 4, gpu_item)
-        
-        self.gpu_nodes_table.setSortingEnabled(True)
-    
-    def set_color_by_usage(self, item, usage):
-        """Set color based on usage rate"""
-        if usage > 80:
-            item.setForeground(QBrush(QColor(255, 0, 0)))  # Red
-        elif usage > 60:
-            item.setForeground(QBrush(QColor(255, 165, 0)))  # Orange
-        else:
-            item.setForeground(QBrush(QColor(0, 128, 0)))  # Green
-    
-    def set_color_by_state(self, item, state):
-        """Colour a node row by its state.
+        gpu_layout.setContentsMargins(0, 12, 0, 0)
+        gpu_layout.setSpacing(10)
+        filters = QHBoxLayout()
+        filters.setSpacing(12)
+        self.family_filter = SegmentedControl([("All GPUs", None),
+                                               ("L40S / RTX6000", "gpu32"),
+                                               ("V100 / A30 / A100", "gpu")])
+        self.family_filter.changed.connect(lambda _d: self._render_gpu_nodes())
+        filters.addWidget(self.family_filter)
+        self.idle_only = QCheckBox("Only nodes with an idle GPU")
+        self.idle_only.stateChanged.connect(lambda _s: self._render_gpu_nodes())
+        filters.addWidget(self.idle_only)
+        filters.addStretch(1)
+        self.gpu_summary = label("", "muted")
+        filters.addWidget(self.gpu_summary)
+        gpu_layout.addLayout(filters)
 
-        The states must match what NodeStatusManager._parse_nodes_info emits:
-        "Error" / "Full" / "Partially Used" / "Idle". They used to be compared
-        against Chinese literals the backend never produced, so every node fell
-        through to the green "Idle" branch regardless of its real state.
-        """
-        if state == "Error":
-            item.setForeground(QBrush(QColor(255, 0, 0)))        # Red
-        elif state == "Full":
-            item.setForeground(QBrush(QColor(255, 165, 0)))      # Orange
-        elif state == "Partially Used":
-            item.setForeground(QBrush(QColor(0, 0, 255)))        # Blue
-        else:  # Idle
-            item.setForeground(QBrush(QColor(0, 128, 0)))        # Green
-    
-    def show_error(self, error_msg):
-        """Display error message"""
-        self.refresh_indicator.setText(f"Error: {error_msg}")
-        self.refresh_indicator.setStyleSheet("color: red;")
-        logger.error(error_msg)
-        
-        # Enable refresh button
+        self.gpu_nodes_table = make_table(
+            ["Node", "GPU", "GPUs", "Idle cores", "Free memory",
+             "Fits a free job now", "State"], stretch=5)
+        self.gpu_nodes_table.setItemDelegateForColumn(2, BarDelegate(self))
+        self.gpu_nodes_table.setItemDelegateForColumn(
+            6, PillDelegate(tone_for=_node_state_tone, parent=self))
+        for col, width in enumerate((150, 84, 290, 92, 104, 0, 96)):
+            if width:
+                self.gpu_nodes_table.setColumnWidth(col, width)
+        gpu_layout.addWidget(self.gpu_nodes_table)
+        self.tabs.addTab(gpu_tab, "GPU nodes")
+
+        # --- queue tab ---
+        queue_tab = QWidget()
+        queue_layout = QVBoxLayout(queue_tab)
+        queue_layout.setContentsMargins(0, 12, 0, 0)
+        queue_layout.setSpacing(10)
+        queue_layout.addWidget(label(
+            "Jobs waiting for a GPU. \"In line\" jobs are waiting on priority or a free "
+            "node; \"held back\" ones are stopped by their own limits (an array throttle, "
+            "a per-account GPU cap, a dependency) and are not competing for the next GPU.",
+            "muted", wrap=True))
+        self.queue_table = make_table(
+            ["Partition", "Tier", "Waiting", "In line", "Held back", "Top priority in line"],
+            sortable=False)
+        self.queue_table.setItemDelegateForColumn(
+            1, PillDelegate(tone_for=_tier_tone, parent=self))
+        self.queue_table.setMaximumHeight(38 * 5 + 12)
+        for col, width in enumerate((150, 90, 100, 100, 110)):
+            self.queue_table.setColumnWidth(col, width)
+        queue_layout.addWidget(self.queue_table)
+
+        queue_layout.addWidget(label("Your priority in the free queues", "section"))
+        queue_layout.addWidget(label(
+            "A free job's priority comes almost entirely from the fair-share score of "
+            "the account it is submitted under — and free partitions accept any of your "
+            "accounts. The Sessions page picks the best one for you.", "muted", wrap=True))
+        self.share_table = make_table(
+            ["Account", "Fair share", "Free-queue priority", "Rank in free-gpu32",
+             "Rank in free-gpu"], sortable=False)
+        self.share_table.setItemDelegateForColumn(1, BarDelegate(self))
+        for col, width in enumerate((270, 180, 150, 170)):
+            self.share_table.setColumnWidth(col, width)
+        queue_layout.addWidget(self.share_table, 1)
+        self.tabs.addTab(queue_tab, "Queue && priority")
+
+        # --- all nodes tab ---
+        all_tab = QWidget()
+        all_layout = QVBoxLayout(all_tab)
+        all_layout.setContentsMargins(0, 12, 0, 0)
+        self.all_nodes_table = make_table(
+            ["Node", "State", "Cores in use", "Memory in use", "GPU", "Partitions"])
+        self.all_nodes_table.setItemDelegateForColumn(
+            1, PillDelegate(tone_for=_node_state_tone, parent=self))
+        self.all_nodes_table.setItemDelegateForColumn(2, BarDelegate(self))
+        self.all_nodes_table.setItemDelegateForColumn(3, BarDelegate(self))
+        for col, width in enumerate((160, 110, 200, 220, 130)):
+            self.all_nodes_table.setColumnWidth(col, width)
+        all_layout.addWidget(self.all_nodes_table)
+        self.tabs.addTab(all_tab, "All nodes")
+
+        outer.addWidget(divider())
+        self.status_view = LiveStatusView(self)
+        outer.addWidget(self.status_view)
+
+    # --- loading ---------------------------------------------------------------
+
+    def on_shown(self):
+        """Called when the page becomes visible: refresh if what we have is old."""
+        if time.time() - self._last_refresh > 30:
+            self.refresh_data(quiet=self.snapshot is not None)
+
+    def _auto_refresh(self):
+        if self.isVisible():
+            self.refresh_data(quiet=True)
+
+    @pyqtSlot()
+    def refresh_data(self, quiet=False):
+        """Re-read the cluster on a worker thread."""
+        if self.insights is None:
+            return
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self.refresh_btn.setEnabled(False)
+        if not quiet:
+            self.status_view.start("Reading the cluster", "sinfo and squeue on HPC3")
+        self._worker = SSHWorker(lambda rep: self.insights.snapshot(rep, force=True),
+                                 parent=self, label="cluster")
+        if not quiet:
+            self._worker.progress.connect(self.status_view.set_state)
+            self._worker.log.connect(self.status_view.append_log)
+        self._worker.succeeded.connect(self.update_snapshot)
+        self._worker.failed.connect(self.show_error)
+        self._worker.start()
+
+    def update_snapshot(self, snapshot):
+        """Render a fresh snapshot (runs on the UI thread)."""
         self.refresh_btn.setEnabled(True)
-    
+        if not snapshot or not snapshot.get("nodes"):
+            self.show_error("HPC3 returned no node data", "Try Refresh in a moment.")
+            return
+        self.snapshot = snapshot
+        self._last_refresh = time.time()
+        self._render_tiles()
+        self._render_gpu_nodes()
+        self._render_queue()
+        self._render_all_nodes()
+        self._update_age()
+        models = snapshot["models"]
+        idle = sum(m["idle"] for m in models)
+        startable = sum(m["startable"] for m in models)
+        self.status_view.finish_ok(
+            f"{idle} idle GPUs across the cluster, {startable} on a node that can "
+            f"start a free job right now")
+
+    def _update_age(self):
+        if not self._last_refresh:
+            return
+        age = int(time.time() - self._last_refresh)
+        self.time_label.setText("Updated just now" if age < 15 else
+                                f"Updated {age}s ago" if age < 90 else
+                                f"Updated {age // 60} min ago")
+
+    def show_error(self, error_msg, hint=""):
+        logger.error("%s %s", error_msg, hint)
+        self.refresh_btn.setEnabled(self.insights is not None)
+        self.status_view.finish_error(str(error_msg), hint)
+
+    # --- rendering -------------------------------------------------------------
+
+    def _render_tiles(self):
+        rows = {m["model"]: m for m in self.snapshot["models"]}
+        for model, tile in self.tiles.items():
+            row = rows.get(model)
+            if not row:
+                tile.set("—", "no nodes reported")
+                tile.bar.set_segments([])
+                tile.split.setText("")
+                continue
+            idle, startable = row["idle"], row["startable"]
+            if not idle:
+                detail = "all in use"
+            elif startable == idle:
+                detail = "all can start a job now"
+            elif startable:
+                detail = f"{startable} can start a job now"
+            else:
+                detail = "none can start a job"
+            tile.set(f"{idle} idle", detail, tone="ok" if startable else None)
+            if idle > startable:
+                tile.detail.setToolTip(
+                    f"{idle - startable} idle GPU(s) sit on nodes whose cores or memory "
+                    f"are already taken, so no job can use them yet.")
+            tile.bar.set_segments([(row["paid"], "gpu_paid"), (row["free"], "gpu_free"),
+                                   (idle, "gpu_idle")])
+            tile.split.setText(f"{row['paid']} paid · {row['free']} free · "
+                               f"{row['total']} total")
+
+    def _render_gpu_nodes(self):
+        if not self.snapshot:
+            return
+        table = self.gpu_nodes_table
+        family = self.family_filter.currentData()
+        only_idle = self.idle_only.isChecked()
+        nodes = [n for n in self.snapshot["nodes"].values() if n["gpu_total"]]
+        if family:
+            nodes = [n for n in nodes if cv.node_family(n) == family]
+        if only_idle:
+            nodes = [n for n in nodes if n["gpu_total"] - n["gpu_used"] > 0]
+        nodes.sort(key=lambda n: n["name"])
+
+        table.setSortingEnabled(False)
+        table.setRowCount(len(nodes))
+        for row, node in enumerate(nodes):
+            idle = node["gpu_total"] - node["gpu_used"]
+            table.setItem(row, 0, SortItem(node["name"]))
+            table.setItem(row, 1, SortItem(node["gpu_model"]))
+
+            text = f"{node['gpu_paid']} paid · {node['gpu_free']} free · {idle} idle"
+            gpus = SortItem(text, sort_key=idle)
+            if node.get("gpu_mine"):
+                gpus.setToolTip(f"{node['gpu_mine']} of these are yours")
+            gpus.setData(DATA_ROLE, [(node["gpu_paid"], "gpu_paid"),
+                                     (node["gpu_free"], "gpu_free"), (idle, "gpu_idle")])
+            table.setItem(row, 2, gpus)
+
+            table.setItem(row, 3, SortItem(f"{node['cpus_idle']} of {node['cpus_total']}",
+                                           sort_key=node["cpus_idle"]))
+            left = max(0, node["mem_mb"] - node["alloc_mem_mb"])
+            table.setItem(row, 4, SortItem(f"{_gb(left)} GB", sort_key=left))
+
+            have = cv.room(node, use_free=True)
+            if have["gpus"]:
+                text = (f"{have['gpus']} GPU{'s' if have['gpus'] != 1 else ''} · "
+                        f"{have['cpus']} cores · {have['mem_gb']} GB")
+            elif not idle:
+                text = "—"
+            elif not cv.takes_free_jobs(node):
+                text = "Paid jobs only"
+            elif cv.base_state(node["state"]) not in ("idle", "mixed"):
+                text = "Node isn't accepting jobs"
+            else:
+                text = "No free cores or memory"
+            room_item = SortItem(text, sort_key=have["gpus"] * 1000 + have["cpus"])
+            room_item.setToolTip(text)
+            if have["gpus"]:
+                room_item.setForeground(theme.color("ok"))
+            elif idle:
+                room_item.setForeground(theme.color("muted"))
+            table.setItem(row, 5, room_item)
+            table.setItem(row, 6, SortItem(cv.base_state(node["state"]) or node["state"]))
+        table.setSortingEnabled(True)
+
+        idle_total = sum(n["gpu_total"] - n["gpu_used"] for n in nodes)
+        startable = sum(cv.room(n)["gpus"] for n in nodes)
+        self.gpu_summary.setText(
+            f"{len(nodes)} nodes · {idle_total} idle GPUs · {startable} startable now")
+
+    def _render_queue(self):
+        snapshot = self.snapshot
+        rows = snapshot.get("queue", [])
+        table = self.queue_table
+        table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            part = row["partition"]
+            table.setItem(r, 0, QTableWidgetItem(part))
+            table.setItem(r, 1, QTableWidgetItem("Free" if part.startswith("free") else "Paid"))
+            table.setItem(r, 2, QTableWidgetItem(f"{row['pending']:,}"))
+            table.setItem(r, 3, QTableWidgetItem(f"{row['competing']:,}"))
+            table.setItem(r, 4, QTableWidgetItem(f"{row['blocked']:,}"))
+            table.setItem(r, 5, QTableWidgetItem(
+                f"{row['top_priority']:,}" if row["competing"] else "—"))
+
+        shares = snapshot.get("fairshare", {})
+        pending = snapshot.get("pending", [])
+        best = cv.best_free_account(list(shares), shares)
+        accounts = sorted(shares, key=lambda a: -shares[a])
+        table = self.share_table
+        table.setRowCount(len(accounts))
+        for r, account in enumerate(accounts):
+            priority = cv.free_priority(shares[account])
+            name = QTableWidgetItem(account + ("  ·  best for free"
+                                               if account == best and len(accounts) > 1 else ""))
+            if account == best and len(accounts) > 1:
+                font = name.font()
+                font.setBold(True)
+                name.setFont(font)
+            table.setItem(r, 0, name)
+            share = QTableWidgetItem(f"{shares[account]:.2f}")
+            share.setData(DATA_ROLE, [(shares[account], "accent"),
+                                      (1.0 - shares[account], "track")])
+            table.setItem(r, 1, share)
+            table.setItem(r, 2, QTableWidgetItem(f"≈ {priority:,}"))
+            for col, part in ((3, "free-gpu32"), (4, "free-gpu")):
+                ahead, competing = cv.jobs_ahead(pending, part, priority)
+                text = ("queue is empty" if not competing else
+                        f"ahead of all {competing}" if ahead == 0 else
+                        f"{ahead} of {competing} ahead of you")
+                item = QTableWidgetItem(text)
+                if competing and ahead == 0:
+                    item.setForeground(theme.color("ok"))
+                table.setItem(r, col, item)
+
+    def _render_all_nodes(self):
+        table = self.all_nodes_table
+        nodes = sorted(self.snapshot["nodes"].values(), key=lambda n: n["name"])
+        table.setSortingEnabled(False)
+        table.setRowCount(len(nodes))
+        for row, node in enumerate(nodes):
+            table.setItem(row, 0, SortItem(node["name"]))
+            table.setItem(row, 1, SortItem(cv.base_state(node["state"]) or node["state"]))
+            total = node["cpus_total"] or 1
+            frac = node["cpus_alloc"] / total
+            cpu = SortItem(f"{node['cpus_alloc']} / {node['cpus_total']}", sort_key=frac)
+            cpu.setData(DATA_ROLE, frac)
+            table.setItem(row, 2, cpu)
+            mfrac = node["alloc_mem_mb"] / (node["mem_mb"] or 1)
+            mem = SortItem(f"{_gb(node['alloc_mem_mb'])} / {_gb(node['mem_mb'])} GB",
+                           sort_key=mfrac)
+            mem.setData(DATA_ROLE, mfrac)
+            table.setItem(row, 3, mem)
+            gpu = (f"{node['gpu_used']} / {node['gpu_total']} {node['gpu_model']}"
+                   if node["gpu_total"] else "—")
+            table.setItem(row, 4, SortItem(gpu, sort_key=node["gpu_total"]))
+            table.setItem(row, 5, SortItem(", ".join(node["partitions"])))
+        table.setSortingEnabled(True)
+
     def closeEvent(self, event):
-        """Close event"""
-        # Stop all timers
-        if hasattr(self, 'refresh_timer') and self.refresh_timer:
-            self.refresh_timer.stop()
-        
-        # Stop refresh thread
-        if self.refresh_worker and self.refresh_worker.isRunning():
-            self.refresh_worker.stop()
-        
-        super().closeEvent(event) 
+        self._auto_timer.stop()
+        self._age_timer.stop()
+        super().closeEvent(event)
