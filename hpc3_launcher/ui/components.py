@@ -127,14 +127,22 @@ def divider():
 
 
 class Card(QFrame):
-    """A rounded surface with an optional title row. Add content to ``.body``."""
+    """A group of content with an optional quiet title row. Add content to ``.body``.
+
+    ``kind=True`` is the soft floating panel -- use one per column at most.
+    ``kind="flat"`` is a group with no surface of its own, for sections that sit
+    on the canvas or share a panel with other groups.
+    """
 
     def __init__(self, title=None, subtitle=None, parent=None, kind=True):
         super().__init__(parent)
         self.setProperty("card", kind)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 16, 18, 16)
-        outer.setSpacing(12)
+        if kind == "flat":
+            outer.setContentsMargins(0, 0, 0, 0)
+        else:
+            outer.setContentsMargins(18, 16, 18, 16)
+        outer.setSpacing(10)
         self.header = QHBoxLayout()
         self.header.setSpacing(8)
         if title:
@@ -157,37 +165,44 @@ class Card(QFrame):
 
 
 class PageHeader(QWidget):
-    """Title + one-line subtitle on the left, action buttons on the right."""
+    """A slim top bar: the page name on the left, actions on the right.
+
+    The one-line description a page passes in is its tooltip, not a second line
+    of text under a big heading -- the sidebar already says where you are. A
+    message set later with ``set_subtitle`` (something the user must know, such
+    as "sign in again") is shown beside the name.
+    """
 
     def __init__(self, title, subtitle="", parent=None):
         super().__init__(parent)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(10)
-        col = QVBoxLayout()
-        col.setSpacing(2)
+        row.setSpacing(12)
         self.title_label = label(title, "title")
-        self.subtitle_label = label(subtitle, "subtitle", wrap=True)
-        col.addWidget(self.title_label)
-        col.addWidget(self.subtitle_label)
-        row.addLayout(col, 1)
+        self.title_label.setToolTip(subtitle)
+        row.addWidget(self.title_label, 0, Qt.AlignVCenter)
+        self.subtitle_label = label("", "muted")
+        self.subtitle_label.hide()
+        row.addWidget(self.subtitle_label, 1, Qt.AlignVCenter)
         self.actions = QHBoxLayout()
         self.actions.setSpacing(8)
         row.addLayout(self.actions)
+        self.setFixedHeight(34)
 
     def add_action(self, widget):
         self.actions.addWidget(widget, 0, Qt.AlignVCenter)
 
     def set_subtitle(self, text):
         self.subtitle_label.setText(text)
+        self.subtitle_label.setVisible(bool(text))
 
 
 def page_layout(widget):
     """The standard page frame: generous margins, 16 px between blocks."""
     widget.setObjectName("page")
     layout = QVBoxLayout(widget)
-    layout.setContentsMargins(28, 24, 28, 18)
-    layout.setSpacing(16)
+    layout.setContentsMargins(26, 16, 26, 14)
+    layout.setSpacing(14)
     return layout
 
 
@@ -213,9 +228,9 @@ class StatTile(QFrame):
 
     def __init__(self, caption, value="—", detail="", parent=None):
         super().__init__(parent)
-        self.setProperty("card", True)
+        self.setProperty("card", "flat")      # no box: tiles share one panel
         col = QVBoxLayout(self)
-        col.setContentsMargins(14, 12, 14, 12)
+        col.setContentsMargins(4, 0, 12, 0)
         col.setSpacing(3)
         self.caption = label(caption, "field")
         self.value = label(value, "stat")
@@ -366,7 +381,7 @@ def make_table(headers, stretch=None, sortable=True):
     table.setColumnCount(len(headers))
     table.setHorizontalHeaderLabels(headers)
     table.verticalHeader().setVisible(False)
-    table.verticalHeader().setDefaultSectionSize(38)
+    table.verticalHeader().setDefaultSectionSize(42)
     table.setShowGrid(False)
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)

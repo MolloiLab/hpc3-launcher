@@ -187,9 +187,14 @@ Look and layout live in two shared files; pages must not hard-code colours:
     is running, so never cache a colour**: no `setStyleSheet(f"color: {...}")` on
     a widget. Style through a property, paint with `theme.color()` at paint time,
     or redraw on `theme.notifier.changed`
-  - The look is deliberately quiet: neutral canvas, hairline borders, one accent,
-    no card inside a card, sentence-case labels, and a state shown as a small
-    coloured dot beside plain text (`components.dot`) rather than coloured text
+  - The look follows T3 Code's, and that is structure more than colour: content
+    sits straight on the canvas; **at most one soft floating panel per column**
+    (`Card()`), with further groups inside it as `Card(kind="flat")`; tables are
+    lists (no box, faint header or none); controls are filled, not outlined; the
+    sidebar is a tinted surface with a tinted selection and line icons
+    (`theme.nav_icon`); pages have a slim top bar, not a heading and subtitle;
+    sentence-case labels; a state is a small coloured dot beside plain text
+    (`components.dot`). Adding a bordered box round something is the wrong fix
   - One application-wide event filter gives every button, combo box, tab and
     checkbox a pointing-hand cursor; a table whose rows do something sets the
     `clickableRows` property. Don't set cursors widget by widget
