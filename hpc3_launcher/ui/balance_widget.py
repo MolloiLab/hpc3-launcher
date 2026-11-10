@@ -9,8 +9,8 @@ from modules.balance import BalanceManager
 from modules.auth import HPC_SERVER, get_all_existing_users
 from core.ssh_session import SSHWorker
 from ui.status_view import LiveStatusView
-from ui.components import (PageHeader, StatTile, SortItem, BarDelegate, DATA_ROLE,
-                           button, divider, make_table, page_layout)
+from ui.components import (Card, PageHeader, StatTile, SortItem, BarDelegate, DATA_ROLE,
+                           button, make_table, page_layout)
 
 # Configure logging
 logger = logging.getLogger('BalanceWidget')
@@ -85,7 +85,9 @@ class BalanceWidget(QWidget):
         self.accounts_tile = StatTile("Accounts", "—", "")
         for tile in (self.personal_tile, self.used_tile, self.accounts_tile):
             tiles.addWidget(tile, 1)
-        main_layout.addLayout(tiles)
+        summary = Card()                     # the three numbers share one soft panel
+        summary.body.addLayout(tiles)
+        main_layout.addWidget(summary)
 
         # Accounts table
         self.accounts_table = make_table(
@@ -97,7 +99,6 @@ class BalanceWidget(QWidget):
         main_layout.addWidget(self.accounts_table, 1)
 
         # Bottom: live status surface (spinner + state + collapsible log)
-        main_layout.addWidget(divider())
         self.status_view = LiveStatusView(self)
         main_layout.addWidget(self.status_view)
 

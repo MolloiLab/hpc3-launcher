@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QActionGroup, QWidget, QVBoxLayout, QMessageBox,
     QDialog, QHBoxLayout, QListWidget, QStackedWidget, QLabel,
 )
-from PyQt5.QtCore import Qt, QTimer, QUrl
+from PyQt5.QtCore import Qt, QSize, QTimer, QUrl
 from PyQt5.QtGui import QIcon, QDesktopServices
 
 from ui import theme
@@ -108,13 +108,13 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self):
         side = QWidget()
         side.setObjectName("sidebar")
-        side.setFixedWidth(212)
+        side.setFixedWidth(224)
         col = QVBoxLayout(side)
-        col.setContentsMargins(0, 22, 0, 16)
+        col.setContentsMargins(0, 18, 0, 16)
         col.setSpacing(4)
 
         brand_row = QHBoxLayout()
-        brand_row.setContentsMargins(20, 0, 16, 14)
+        brand_row.setContentsMargins(20, 0, 16, 12)
         brand_row.setSpacing(10)
         logo = QLabel()
         icon = app_icon()
@@ -130,8 +130,11 @@ class MainWindow(QMainWindow):
         self.sidebar.setObjectName("nav")
         self.sidebar.setFocusPolicy(Qt.NoFocus)
         self.sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.sidebar.setIconSize(QSize(18, 18))
         for item in self.PAGES:
             self.sidebar.addItem(item)
+        self._paint_nav_icons()
+        theme.notifier.changed.connect(self._paint_nav_icons)   # icons are drawn in theme colours
         self.sidebar.currentRowChanged.connect(self._display_page)
         col.addWidget(self.sidebar, 1)
 
@@ -152,6 +155,12 @@ class MainWindow(QMainWindow):
         foot.addWidget(QLabel(f"{HPC_SERVER} · v{get_current_version()}"))
         col.addLayout(foot)
         return side
+
+    NAV_ICONS = ("sessions", "jobs", "nodes", "balance")
+
+    def _paint_nav_icons(self):
+        for row, name in enumerate(self.NAV_ICONS):
+            self.sidebar.item(row).setIcon(theme.nav_icon(name))
 
     def _set_theme(self, mode):
         """Switch between following the OS, light and dark; remembered next launch."""

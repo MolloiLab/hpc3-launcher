@@ -18,8 +18,7 @@ from modules.hpc3_constraints import (account_family, is_gpu_family, family_gpu_
 from core.ssh_session import SSHWorker
 from ui import theme
 from ui.status_view import LiveStatusView
-from ui.components import (PageHeader, SegmentedControl, PillDelegate, button, label,
-                           divider, make_table, page_layout)
+from ui.components import (PageHeader, SegmentedControl, PillDelegate, button, label, make_table, page_layout)
 
 # Columns of the jobs table that code refers to by position.
 COL_STATE, COL_QUEUE, COL_REASON = 2, 3, 8
@@ -667,7 +666,6 @@ class TaskManagerWidget(QWidget):
         main_layout.addWidget(self.jobs_table, 1)
 
         # Live status surface (spinner + state + collapsible log) for all SSH work.
-        main_layout.addWidget(divider())
         self.status_view = LiveStatusView(self)
         main_layout.addWidget(self.status_view)
 

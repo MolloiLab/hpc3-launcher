@@ -27,8 +27,8 @@ from core.ssh_session import SSHWorker
 from ui import theme
 from ui.status_view import LiveStatusView
 from ui.components import (
-    PageHeader, StatTile, SegmentBar, SegmentedControl, Legend, SortItem,
-    PillDelegate, BarDelegate, DATA_ROLE, ask_flag_note, button, label, divider,
+    Card, PageHeader, StatTile, SegmentBar, SegmentedControl, Legend, SortItem,
+    PillDelegate, BarDelegate, DATA_ROLE, ask_flag_note, button, label,
     make_table, page_layout,
 )
 
@@ -98,7 +98,7 @@ class NodeStatusWidget(QWidget):
 
         # One tile per GPU model.
         self.tiles_row = QHBoxLayout()
-        self.tiles_row.setSpacing(12)
+        self.tiles_row.setSpacing(18)
         self.tiles = {}
         for family in ("gpu32", "gpu"):
             for model in hc._FAMILY_MODEL_ORDER[family]:
@@ -108,10 +108,13 @@ class NodeStatusWidget(QWidget):
                 tile.extra.addWidget(tile.bar)
                 self.tiles[model] = tile
                 self.tiles_row.addWidget(tile, 1)
-        outer.addLayout(self.tiles_row)
-
-        outer.addWidget(Legend([("gpu_paid", "Paid job"), ("gpu_free", "Free job"),
-                                ("gpu_idle", "Idle")]))
+        # The five models share one soft panel, with the key to the bars under them.
+        summary = Card()
+        summary.body.setSpacing(12)
+        summary.body.addLayout(self.tiles_row)
+        summary.body.addWidget(Legend([("gpu_paid", "Paid job"), ("gpu_free", "Free job"),
+                                       ("gpu_idle", "Idle")]))
+        outer.addWidget(summary)
 
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs, 1)
@@ -207,7 +210,6 @@ class NodeStatusWidget(QWidget):
         all_layout.addWidget(self.all_nodes_table)
         self.tabs.addTab(all_tab, "All nodes")
 
-        outer.addWidget(divider())
         self.status_view = LiveStatusView(self)
         outer.addWidget(self.status_view)
 

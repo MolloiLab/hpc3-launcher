@@ -441,9 +441,10 @@ class VSCodeWidget(QWidget):
 
     def _waiting_text(self, info):
         node = info.get('node')
-        if info.get('config'):
-            return f"{node} · ready to connect" if node else "Ready to connect"
-        if (info.get('status') or '').upper() != 'PENDING':
+        status = (info.get('status') or '').upper()
+        if info.get('config') or status == 'RUNNING':
+            return node or "Running"
+        if status != 'PENDING':
             return f"{node} · starting…" if node else "Starting…"
         bits = []
         if info.get('reason'):
@@ -776,7 +777,9 @@ class VSCodeWidget(QWidget):
         # What decides how soon a free job starts: priority, fit, bad nodes, and
         # Slurm's own estimates. First thing on the right so it is never scrolled
         # out of sight (it used to sit under the form, below the fold).
-        self.advice_card = Card("Free-tier outlook")
+        panel = Card()                       # the one floating surface on the right
+        panel.body.setSpacing(14)
+        self.advice_card = Card("Free-tier outlook", kind="flat")
         advice = self.advice_card.body
         advice.setSpacing(6)
         # Slurm's start estimate for this same size on every GPU model.
@@ -803,9 +806,11 @@ class VSCodeWidget(QWidget):
         self.compare_row.setSpacing(8)
         self.compare_box.hide()
         advice.addWidget(self.compare_box)
-        right.addWidget(self.advice_card, 0)
+        advice.addSpacing(4)
+        advice.addWidget(divider())          # hidden with the group on the paid tier
+        panel.body.addWidget(self.advice_card, 0)
 
-        sessions_card = Card("Your sessions")
+        sessions_card = Card("Your sessions", kind="flat")
         self.sessions_label = label("No sessions yet — launch one on the left.", "muted")
         sessions_card.header.insertWidget(1, self.sessions_label, 0, Qt.AlignVCenter)
         # Cancel the session selected in the table below.
@@ -819,6 +824,7 @@ class VSCodeWidget(QWidget):
 
         self.sessions_table = make_table(["Job", "State", "Queue", "Status"],
                                          sortable=False)
+        self.sessions_table.horizontalHeader().hide()   # four self-evident columns
         self.sessions_table.setItemDelegateForColumn(1, PillDelegate(parent=self))
         self.sessions_table.setItemDelegateForColumn(
             2, PillDelegate(tone_for=_tier_tone, parent=self))
@@ -832,9 +838,9 @@ class VSCodeWidget(QWidget):
         self.sessions_table.setProperty("clickableRows", True)
         self.sessions_table.itemSelectionChanged.connect(self._on_session_selected)
         sessions_card.body.addWidget(self.sessions_table)
-        right.addWidget(sessions_card, 3)
+        panel.body.addWidget(sessions_card, 3)
 
-        details = Card("Connect")
+        details = Card("Connect", kind="flat")
         host_row = QHBoxLayout()
         host_row.setSpacing(8)
         self.host_label = label("", "mono")
@@ -861,7 +867,8 @@ class VSCodeWidget(QWidget):
         result_widget.addTab(self.config_text, "How to connect")
         result_widget.addTab(self.job_info_text, "Job details")
         details.body.addWidget(result_widget)
-        right.addWidget(details, 4)
+        panel.body.addWidget(details, 4)
+        right.addWidget(panel, 1)
 
         right_host = QWidget()
         right.setContentsMargins(0, 0, 6, 0)
@@ -876,7 +883,6 @@ class VSCodeWidget(QWidget):
 
         # Live status surface stays pinned at the bottom so the spinner/log is
         # always visible.
-        outer.addWidget(divider())
         self.status_view = LiveStatusView(self)
         outer.addWidget(self.status_view)
 
