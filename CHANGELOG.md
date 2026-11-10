@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.6.0...v0.6.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **ui:** declutter every page, add a light/dark switch, and point at what can be clicked ([#18](https://github.com/MolloiLab/hpc3-launcher/issues/18)) ([cd5b620](https://github.com/MolloiLab/hpc3-launcher/commit/cd5b620029f46307fa22ecf4dbead801b9afd1f6))
+
 ## [0.6.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.5.0...v0.6.0) (2026-11-10)
 
 
