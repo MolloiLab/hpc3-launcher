@@ -80,9 +80,9 @@ class BalanceWidget(QWidget):
 
         tiles = QHBoxLayout()
         tiles.setSpacing(12)
-        self.personal_tile = StatTile("PERSONAL ALLOCATION LEFT", "—", "")
-        self.used_tile = StatTile("USED BY YOU", "—", "across all accounts")
-        self.accounts_tile = StatTile("ACCOUNTS", "—", "")
+        self.personal_tile = StatTile("Personal allocation left", "—", "")
+        self.used_tile = StatTile("Used by you", "—", "across all accounts")
+        self.accounts_tile = StatTile("Accounts", "—", "")
         for tile in (self.personal_tile, self.used_tile, self.accounts_tile):
             tiles.addWidget(tile, 1)
         main_layout.addLayout(tiles)

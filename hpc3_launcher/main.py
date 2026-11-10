@@ -7,13 +7,14 @@ import os
 import logging
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QAction, QWidget, QVBoxLayout, QMessageBox,
+    QApplication, QMainWindow, QAction, QActionGroup, QWidget, QVBoxLayout, QMessageBox,
     QDialog, QHBoxLayout, QListWidget, QStackedWidget, QLabel,
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtGui import QIcon, QDesktopServices
 
 from ui import theme
+from ui.components import SegmentedControl
 from ui.login_dialog import LoginDialog
 from ui.task_manager_widget import TaskManagerWidget
 from ui.node_status_widget import NodeStatusWidget
@@ -135,15 +136,29 @@ class MainWindow(QMainWindow):
         col.addWidget(self.sidebar, 1)
 
         foot = QVBoxLayout()
-        foot.setContentsMargins(20, 0, 16, 0)
+        foot.setContentsMargins(16, 0, 16, 0)
         foot.setSpacing(2)
+        # Light / dark, where it can be seen (also under View > Appearance).
+        self.theme_switch = SegmentedControl([("Auto", "system"), ("Light", "light"),
+                                              ("Dark", "dark")])
+        self.theme_switch.setToolTips(["Follow the operating system", "Light", "Dark"])
+        self.theme_switch.setCurrentData(theme.current_mode())
+        self.theme_switch.changed.connect(self._set_theme)
+        foot.addWidget(self.theme_switch)
+        foot.addSpacing(12)
         user = QLabel(self.username or "not signed in")
         user.setObjectName("user")
         foot.addWidget(user)
-        foot.addWidget(QLabel(HPC_SERVER))
-        foot.addWidget(QLabel(f"v{get_current_version()}"))
+        foot.addWidget(QLabel(f"{HPC_SERVER} · v{get_current_version()}"))
         col.addLayout(foot)
         return side
+
+    def _set_theme(self, mode):
+        """Switch between following the OS, light and dark; remembered next launch."""
+        theme.set_mode(mode)
+        self.theme_switch.setCurrentData(mode)
+        for action in self._theme_actions.actions():
+            action.setChecked(action.data() == mode)
 
     def _create_menu_bar(self):
         menubar = self.menuBar()
@@ -159,6 +174,16 @@ class MainWindow(QMainWindow):
             action.setShortcut(f"Ctrl+{index + 1}")
             action.triggered.connect(lambda _checked, i=index: self.sidebar.setCurrentRow(i))
             view_menu.addAction(action)
+        view_menu.addSeparator()
+        appearance = view_menu.addMenu("Appearance")
+        self._theme_actions = QActionGroup(self)
+        for text, mode in (("Match system", "system"), ("Light", "light"), ("Dark", "dark")):
+            action = QAction(text, self, checkable=True)
+            action.setData(mode)
+            action.setChecked(mode == theme.current_mode())
+            action.triggered.connect(lambda _checked, m=mode: self._set_theme(m))
+            self._theme_actions.addAction(action)
+            appearance.addAction(action)
 
         help_menu = menubar.addMenu("Help")
         # No in-app updater: new versions are downloaded from the Releases page.
@@ -236,6 +261,12 @@ def _run_smoke_test(app):
 def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # Windows display scaling is often 125% or 150%. Qt 5 rounds those to 1x or 2x
+    # by default, which draws the whole UI a size too small or too large; pass the
+    # real factor through instead.
+    if hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(app_icon())

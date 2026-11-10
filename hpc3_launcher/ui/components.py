@@ -6,7 +6,7 @@ pills and bars inside cells. All colours come from ``ui.theme``.
 """
 
 from PyQt5.QtCore import Qt, QRectF, QSize, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QFont
+from PyQt5.QtGui import QColor, QPainter, QPainterPath
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
@@ -81,8 +81,23 @@ def set_tone(lab, tone):
     theme.restyle(lab)
 
 
+def dot(tone=None):
+    """A small round status light. ``tone`` is a theme key (ok / warn / danger /
+    accent / info / gpu_paid...) or None for neutral grey."""
+    light = QLabel()
+    light.setProperty("dot", tone or "none")
+    light.setFixedSize(8, 8)
+    return light
+
+
+def set_dot(light, tone):
+    light.setProperty("dot", tone or "none")
+    theme.restyle(light)
+
+
 def button(text, variant=None, on_click=None):
-    """A QPushButton: variant is None (secondary), "primary", "danger" or "ghost"."""
+    """A QPushButton: variant is None (secondary), "primary", "danger", "ghost"
+    (quiet, grey) or "link" (quiet, accent)."""
     btn = QPushButton(text)
     if variant:
         btn.setProperty("variant", variant)
@@ -186,10 +201,7 @@ class Pill(QLabel):
         self.set_tone(tone)
 
     def set_tone(self, tone):
-        fg, bg = theme.tone_colors(tone)
-        self.setStyleSheet(
-            f"QLabel {{ color: {fg}; background: {bg}; border-radius: 9px;"
-            f" padding: 2px 9px; font-size: 12px; font-weight: 600; }}")
+        set_tone(self, tone)       # a property, so it follows a light/dark switch
 
     def set(self, text, tone="neutral"):
         self.setText(text)
@@ -203,8 +215,8 @@ class StatTile(QFrame):
         super().__init__(parent)
         self.setProperty("card", True)
         col = QVBoxLayout(self)
-        col.setContentsMargins(16, 14, 16, 14)
-        col.setSpacing(4)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(3)
         self.caption = label(caption, "field")
         self.value = label(value, "stat")
         self.detail = label(detail, "muted")
@@ -243,7 +255,6 @@ class SegmentedControl(QFrame):
             btn = QPushButton(text)
             btn.setProperty("segment", True)
             btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
             self._group.addButton(btn, index)
             self._data.append(data)
             row.addWidget(btn, 1)
@@ -293,7 +304,7 @@ def paint_segments(painter, rect, segments, radius=None):
 class SegmentBar(QWidget):
     """A standalone proportional bar (paid / free / idle, used / available...)."""
 
-    def __init__(self, parent=None, height=8):
+    def __init__(self, parent=None, height=5):
         super().__init__(parent)
         self._segments = []
         self.setFixedHeight(height)
@@ -318,13 +329,10 @@ class Legend(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(14)
         for key, text in entries:
-            dot = QLabel()
-            dot.setFixedSize(9, 9)
-            dot.setStyleSheet(f"background: {theme.colors()[key]}; border-radius: 4px;")
             item = QHBoxLayout()
             item.setSpacing(6)
-            item.addWidget(dot, 0, Qt.AlignVCenter)
-            item.addWidget(label(text, "muted"))
+            item.addWidget(dot(key), 0, Qt.AlignVCenter)
+            item.addWidget(label(text, "faint"))
             row.addLayout(item)
         row.addStretch(1)
 
@@ -375,6 +383,8 @@ def make_table(headers, stretch=None, sortable=True):
     stretch = len(headers) - 1 if stretch is None else stretch
     header.setSectionResizeMode(stretch, QHeaderView.Stretch)
     table.setSortingEnabled(sortable)
+    if sortable:        # clicking a header sorts, so it should look clickable
+        header.viewport().setCursor(Qt.PointingHandCursor)
     return table
 
 
@@ -388,8 +398,15 @@ def _base_paint(delegate, painter, option, index):
         style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
 
 
+def _sentence_case(text):
+    """RUNNING -> Running; anything already mixed-case (free-gpu32) is left alone."""
+    return text.capitalize() if text.isupper() else text
+
+
 class PillDelegate(QStyledItemDelegate):
-    """Draws a cell's text as a rounded pill, toned by ``tone_for(text)``."""
+    """Draws a cell as a small coloured dot and plain text, toned by
+    ``tone_for(text)``. (It used to draw a filled pill; a table full of those was
+    louder than the data in it.)"""
 
     def __init__(self, tone_for=None, parent=None):
         super().__init__(parent)
@@ -400,23 +417,20 @@ class PillDelegate(QStyledItemDelegate):
         text = str(index.data(Qt.DisplayRole) or "")
         if not text:
             return
-        fg, bg = theme.tone_colors(self._tone_for(text))
+        fg, _bg = theme.tone_colors(self._tone_for(text))
+        text = _sentence_case(text)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        font = QFont(option.font)
-        font.setPixelSize(12)
-        font.setBold(True)
-        painter.setFont(font)
-        width = painter.fontMetrics().horizontalAdvance(text) + 18
-        rect = QRectF(option.rect.x() + 10, option.rect.center().y() - 9.5,
-                      min(width, option.rect.width() - 14), 20)
+        rect = option.rect.adjusted(10, 0, -8, 0)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(bg))
-        painter.drawRoundedRect(rect, 10, 10)
-        painter.setPen(QColor(fg))
-        painter.drawText(rect, Qt.AlignCenter,
+        painter.setBrush(QColor(fg))
+        painter.drawEllipse(QRectF(rect.x(), rect.center().y() - 3, 7, 7))
+        painter.setPen(theme.color("text"))
+        painter.setFont(option.font)
+        text_rect = QRectF(rect.x() + 14, rect.y(), max(0, rect.width() - 14), rect.height())
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft,
                          painter.fontMetrics().elidedText(text, Qt.ElideRight,
-                                                          int(rect.width()) - 10))
+                                                          int(text_rect.width())))
         painter.restore()
 
 
@@ -427,7 +441,7 @@ class BarDelegate(QStyledItemDelegate):
     colour that warms as it fills, or a list of ``(value, colour key)`` segments.
     """
 
-    BAR_WIDTH = 96
+    BAR_WIDTH = 84
 
     def paint(self, painter, option, index):
         _base_paint(self, painter, option, index)
@@ -445,7 +459,7 @@ class BarDelegate(QStyledItemDelegate):
         painter.restore()
         if data is None:
             return
-        bar = QRectF(rect.right() - bar_w, rect.center().y() - 3, bar_w, 7)
+        bar = QRectF(rect.right() - bar_w, rect.center().y() - 2, bar_w, 5)
         if isinstance(data, (int, float)):
             frac = max(0.0, min(1.0, float(data)))
             key = "danger" if frac > 0.9 else "warn" if frac > 0.7 else "accent"
