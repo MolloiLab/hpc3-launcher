@@ -57,6 +57,12 @@ FAMILIES = {
     "cpu":   {"paid": "standard", "free": "free",       "node_cpus": 64},
 }
 
+# "Any GPU at all": a free job may list both free GPU partitions and Slurm starts
+# it in whichever has room first. There is no paid equivalent -- a paid GPU job
+# is tied to the one partition its account's suffix unlocks.
+ANY_GPU_FAMILY = "anygpu"
+ANY_GPU_FREE_PARTITIONS = "free-gpu,free-gpu32"
+
 # MaxMemPerCPU (GB) PER PARTITION -- the hard cap SLURM enforces. Request more
 # memory than (this * cpus) and SLURM silently raises --cpus-per-task to fit, so
 # the launcher derives CPUs from memory using these exact numbers. Note it is
@@ -101,6 +107,65 @@ def is_gpu_family(family):
     return family in ("gpu", "gpu32")
 
 
+def tier_gpu_options(account, use_free):
+    """(label, family, gpu_type) rows for the GPU-type dropdown.
+
+    The two tiers are gated differently, and this is where that shows:
+
+    * **Paid** partitions check the account. HPC3's submit filter rejects a job on
+      ``gpu32`` unless the account ends in ``gpu32`` (and likewise ``gpu``), so a
+      paid request offers only the models of the account's own family.
+    * **Free** partitions accept *any* account (``AllowAccounts=ALL``; verified
+      with ``sbatch --test-only`` for every account type, 2026-11). So a free
+      request offers every model, whichever account is chosen.
+
+    Each row carries its family, so a model can still never be paired with the
+    wrong partition: A100 always resolves to ``gpu``/``free-gpu``, RTX6000 always
+    to ``gpu32``/``free-gpu32``.
+    """
+    own = account_family(account)
+    if not use_free:
+        return [(label, own, value) for label, value in family_gpu_options(own)]
+
+    rows = []
+    for family in ("gpu32", "gpu"):
+        models = _FAMILY_MODEL_ORDER[family]
+        low = min(GPU_MODELS[m]["vram_gb"] for m in models)
+        high = max(GPU_MODELS[m]["vram_gb"] for m in models)
+        rows.append((f"Any {' / '.join(models)} ({low}–{high} GB)", family, GPU_ANY))
+        for model in models:
+            rows.append((f"{model} ({GPU_MODELS[model]['vram_gb']} GB)", family, model))
+    rows.append(("Any GPU at all — whichever frees up first", ANY_GPU_FAMILY, GPU_ANY))
+    rows.append(("No GPU (CPU only)", "cpu", GPU_NONE))
+    return rows
+
+
+# Service units charged per hour, per resource, on the paid partitions
+# (TRESBillingWeights from `scontrol show partition`, 2026-11). Free partitions
+# charge nothing.
+SU_PER_CPU_HOUR = 1
+SU_PER_GPU_HOUR = {"V100": 32, "A30": 32, "A100": 32, "L40S": 32, "RTX6000": 64}
+
+
+def su_cost_range(cpus, gpu_type, gpu_count, hours, use_free, family=None):
+    """(low, high) service units a job costs if it runs its whole time limit.
+
+    A range because "any GPU" on gpu32 may land on an L40S (32/h) or an RTX6000
+    (64/h). Free jobs cost (0, 0).
+    """
+    if use_free:
+        return (0, 0)
+    if gpu_type in SU_PER_GPU_HOUR:
+        rates = [SU_PER_GPU_HOUR[gpu_type]]
+    elif gpu_type == GPU_ANY and is_gpu_family(family):
+        rates = [SU_PER_GPU_HOUR[m] for m in _FAMILY_MODEL_ORDER[family]]
+    else:
+        rates, gpu_count = [0], 0
+    base = cpus * SU_PER_CPU_HOUR
+    return (int(round((base + min(rates) * gpu_count) * hours)),
+            int(round((base + max(rates) * gpu_count) * hours)))
+
+
 def family_gpu_options(family):
     """(label, value) pairs for the GPU-type dropdown, given a partition family.
 
@@ -122,6 +187,9 @@ def max_gpus_for(gpu_type, family):
     """Most GPUs requestable for the chosen type (per-node ceiling)."""
     if gpu_type in GPU_MODELS:
         return GPU_MODELS[gpu_type]["max_gpus"]
+    if gpu_type == GPU_ANY and family == ANY_GPU_FAMILY:
+        # Must fit a node of either family, so the smaller ceiling applies.
+        return min(max_gpus_for(GPU_ANY, f) for f in ("gpu", "gpu32"))
     if gpu_type == GPU_ANY and is_gpu_family(family):
         # "Any" -> the best any single node in the family can offer.
         return max(GPU_MODELS[m]["max_gpus"] for m in _FAMILY_MODEL_ORDER[family])
@@ -132,18 +200,24 @@ def max_cpus_for(gpu_type, family):
     """Most CPU cores requestable, bounded by the relevant node type."""
     if gpu_type in GPU_MODELS:
         return GPU_MODELS[gpu_type]["max_cpus"]
+    if gpu_type == GPU_ANY and family == ANY_GPU_FAMILY:
+        return min(max_cpus_for(GPU_ANY, f) for f in ("gpu", "gpu32"))
     if gpu_type == GPU_ANY and is_gpu_family(family):
         return max(GPU_MODELS[m]["max_cpus"] for m in _FAMILY_MODEL_ORDER[family])
     # CPU-only job: bounded by the family's largest node.
     return FAMILIES.get(family, FAMILIES["cpu"])["node_cpus"]
 
 
-def mem_per_cpu_gb(account, gpu_type, use_free):
-    """MaxMemPerCPU (GB) of the partition this request resolves to."""
-    return MEM_PER_CPU_GB.get(partition_for(account, gpu_type, use_free), 6)
+def mem_per_cpu_gb(account, gpu_type, use_free, family=None):
+    """MaxMemPerCPU (GB) of the partition this request resolves to.
+
+    A job listing several partitions must satisfy the strictest of them.
+    """
+    partitions = partition_for(account, gpu_type, use_free, family).split(",")
+    return min(MEM_PER_CPU_GB.get(p, 6) for p in partitions)
 
 
-def required_cpus(mem_gb, gpu_count, account, gpu_type, use_free):
+def required_cpus(mem_gb, gpu_count, account, gpu_type, use_free, family=None):
     """The exact CPU count HPC3 will allocate for this request.
 
     SLURM caps RAM at MaxMemPerCPU GB per core on the target partition, so a job
@@ -152,7 +226,7 @@ def required_cpus(mem_gb, gpu_count, account, gpu_type, use_free):
     DefCpuPerGPU (2) cores per GPU. Deriving CPUs from memory with this is why
     the picker shows the real number (e.g. 32G on gpu32 -> 6, not 4).
     """
-    per = mem_per_cpu_gb(account, gpu_type, use_free)
+    per = mem_per_cpu_gb(account, gpu_type, use_free, family)
     need = max(1, math.ceil(mem_gb / per))
     if gpu_type is not None:  # a GPU was requested
         need = max(need, DEF_CPU_PER_GPU * max(1, gpu_count))
@@ -164,16 +238,26 @@ def runtime_cap_hours(use_free):
     return RUNTIME_MAX_HOURS["free" if use_free else "paid"]
 
 
-def partition_for(account, gpu_type, use_free):
+def is_gpu_request_family(family):
+    """True for any family whose jobs ask for a GPU, including "any GPU at all"."""
+    return is_gpu_family(family) or family == ANY_GPU_FAMILY
+
+
+def partition_for(account, gpu_type, use_free, family=None):
     """The SLURM partition to submit to, from account + GPU type + free flag.
 
     A specific GPU model pins the family (that's the fix for the RTX6000 ->
-    `gpu` mis-routing bug); otherwise the account suffix decides. The free flag
-    then selects the free vs paid partition within that family.
+    `gpu` mis-routing bug). Otherwise an explicit ``family`` decides -- that is how
+    a free job reaches a family other than its account's -- and failing that, the
+    account suffix. The free flag then selects the free vs paid partition.
     """
     if gpu_type in GPU_MODELS:
         family = GPU_MODELS[gpu_type]["family"]
-    else:
+    elif family == ANY_GPU_FAMILY:
+        if not use_free:
+            raise ValueError("'any GPU at all' exists only on the free partitions")
+        return ANY_GPU_FREE_PARTITIONS
+    elif family not in FAMILIES:
         family = account_family(account)
     spec = FAMILIES[family]
     return spec["free"] if use_free else spec["paid"]

@@ -8,16 +8,20 @@ import logging
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QWidget, QVBoxLayout, QMessageBox,
-    QDialog, QHBoxLayout, QListWidget, QStackedWidget, QSplitter,
+    QDialog, QHBoxLayout, QListWidget, QStackedWidget, QLabel,
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
-from PyQt5.QtGui import QIcon, QFont, QDesktopServices
+from PyQt5.QtGui import QIcon, QDesktopServices
 
+from ui import theme
 from ui.login_dialog import LoginDialog
 from ui.task_manager_widget import TaskManagerWidget
 from ui.node_status_widget import NodeStatusWidget
 from ui.balance_widget import BalanceWidget
 from ui.vscode_widget import VSCodeWidget
+from core.ssh_session import HPCSession, HPC_SERVER
+from modules.auth import get_all_existing_users
+from modules.cluster_view import ClusterInsights
 from modules.updater import GITHUB_REPO, get_current_version
 
 logging.basicConfig(level=logging.INFO,
@@ -49,53 +53,92 @@ def app_icon():
 
 
 class MainWindow(QMainWindow):
-    PAGES = ["Job Management", "Node Status", "VSCode", "Account Balance"]
+    # Sessions first: launching and reconnecting to a VSCode session is what the
+    # app is opened for nearly every time.
+    PAGES = ["Sessions", "Jobs", "GPUs & nodes", "Balance"]
 
     def __init__(self, username=None, node_info=None):
         super().__init__()
         self.username = username
         self.node_info = node_info
+        self.insights = self._make_insights()
         self._init_ui()
+
+    def _make_insights(self):
+        """One shared, read-only source of the cluster picture (idle GPUs, queue,
+        priority) for the pages that show it. None when there is no saved key."""
+        for user in get_all_existing_users():
+            if user["username"] == self.username:
+                return ClusterInsights(HPCSession(self.username, user["key_path"]),
+                                       self.username)
+        return None
 
     def _init_ui(self):
         self.setWindowTitle(f"{APP_NAME} — v{get_current_version()}")
-        self.setGeometry(100, 100, 1200, 800)
+        self.resize(1280, 840)
+        self.setMinimumSize(1040, 680)
         self.setWindowIcon(app_icon())
 
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        self.sidebar = QListWidget()
-        self.sidebar.setMinimumWidth(180)
-        self.sidebar.setMaximumWidth(280)
-        self.sidebar.setFont(QFont("Arial", 13))
-        for item in self.PAGES:
-            self.sidebar.addItem(item)
-        self.sidebar.currentRowChanged.connect(self._display_page)
+        main_layout.addWidget(self._build_sidebar())
 
         self.pages = QStackedWidget()
-        self.pages.addWidget(TaskManagerWidget(username=self.username))
-        self.pages.addWidget(NodeStatusWidget(username=self.username))
-        self.pages.addWidget(self._wrap(VSCodeWidget(username=self.username)))
-        self.pages.addWidget(self._wrap(BalanceWidget(username=self.username)))
+        self.vscode_page = VSCodeWidget(username=self.username, insights=self.insights)
+        self.jobs_page = TaskManagerWidget(username=self.username)
+        self.nodes_page = NodeStatusWidget(username=self.username, insights=self.insights)
+        self.balance_page = BalanceWidget(username=self.username)
+        for page in (self.vscode_page, self.jobs_page, self.nodes_page, self.balance_page):
+            self.pages.addWidget(page)
+        main_layout.addWidget(self.pages, 1)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.sidebar)
-        splitter.addWidget(self.pages)
-        splitter.setSizes([200, 1000])
-        main_layout.addWidget(splitter)
-
-        self.statusBar().showMessage(f"Signed in as {self.username or 'unknown user'}")
         self._create_menu_bar()
         self.sidebar.setCurrentRow(0)
 
-    @staticmethod
-    def _wrap(widget):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.addWidget(widget)
-        return page
+    def _build_sidebar(self):
+        side = QWidget()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(212)
+        col = QVBoxLayout(side)
+        col.setContentsMargins(0, 22, 0, 16)
+        col.setSpacing(4)
+
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(20, 0, 16, 14)
+        brand_row.setSpacing(10)
+        logo = QLabel()
+        icon = app_icon()
+        if not icon.isNull():
+            logo.setPixmap(icon.pixmap(26, 26))
+        brand_row.addWidget(logo)
+        brand = QLabel(APP_NAME)
+        brand.setObjectName("brand")
+        brand_row.addWidget(brand, 1)
+        col.addLayout(brand_row)
+
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("nav")
+        self.sidebar.setFocusPolicy(Qt.NoFocus)
+        self.sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        for item in self.PAGES:
+            self.sidebar.addItem(item)
+        self.sidebar.currentRowChanged.connect(self._display_page)
+        col.addWidget(self.sidebar, 1)
+
+        foot = QVBoxLayout()
+        foot.setContentsMargins(20, 0, 16, 0)
+        foot.setSpacing(2)
+        user = QLabel(self.username or "not signed in")
+        user.setObjectName("user")
+        foot.addWidget(user)
+        foot.addWidget(QLabel(HPC_SERVER))
+        foot.addWidget(QLabel(f"v{get_current_version()}"))
+        col.addLayout(foot)
+        return side
 
     def _create_menu_bar(self):
         menubar = self.menuBar()
@@ -104,6 +147,13 @@ class MainWindow(QMainWindow):
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        view_menu = menubar.addMenu("View")
+        for index, name in enumerate(self.PAGES):
+            action = QAction(name, self)
+            action.setShortcut(f"Ctrl+{index + 1}")
+            action.triggered.connect(lambda _checked, i=index: self.sidebar.setCurrentRow(i))
+            view_menu.addAction(action)
 
         help_menu = menubar.addMenu("Help")
         # No in-app updater: new versions are downloaded from the Releases page.
@@ -129,6 +179,9 @@ class MainWindow(QMainWindow):
 
     def _display_page(self, index):
         self.pages.setCurrentIndex(index)
+        page = self.pages.currentWidget()
+        if hasattr(page, "on_shown"):
+            page.on_shown()
 
     def closeEvent(self, event):
         if QMessageBox.question(
@@ -176,9 +229,12 @@ def _run_smoke_test(app):
 
 
 def main():
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(app_icon())
+    theme.apply_theme(app)
 
     if os.environ.get("HPC3_SMOKE_TEST"):
         return _run_smoke_test(app)

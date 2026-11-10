@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                           QTableWidget, QTableWidgetItem, QHeaderView, QStyle, 
-                           QFrame, QSplitter, QGridLayout, QProgressBar)
-from PyQt5.QtCore import Qt, pyqtSlot
-from PyQt5.QtGui import QFont, QColor, QBrush
+from PyQt5.QtWidgets import QWidget, QHBoxLayout
+from PyQt5.QtCore import pyqtSlot
 
 import logging
 from modules.balance import BalanceManager
 from modules.auth import HPC_SERVER, get_all_existing_users
 from core.ssh_session import SSHWorker
 from ui.status_view import LiveStatusView
+from ui.components import (PageHeader, StatTile, SortItem, BarDelegate, DATA_ROLE,
+                           button, divider, make_table, page_layout)
 
 # Configure logging
 logger = logging.getLogger('BalanceWidget')
@@ -70,80 +69,35 @@ class BalanceWidget(QWidget):
     
     def init_ui(self):
         """Initialize UI components"""
-        main_layout = QVBoxLayout(self)
-        
-        # Top control bar
-        control_layout = QHBoxLayout()
-        
-        # Refresh button with icon
-        self.refresh_btn = QPushButton("Refresh Balance Info")
-        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.refresh_btn.clicked.connect(self.refresh_balance)
-        control_layout.addWidget(self.refresh_btn)
-        
-        # Refresh status indicator
-        self.refresh_indicator = QLabel("Ready")
-        self.refresh_indicator.setStyleSheet("color: green;")
-        control_layout.addWidget(self.refresh_indicator)
-        
-        control_layout.addStretch()
-        
-        # Add control bar to main layout
-        main_layout.addLayout(control_layout)
-        
-        # Overview panel
-        overview_frame = QFrame()
-        overview_frame.setFrameShape(QFrame.StyledPanel)
-        overview_layout = QGridLayout(overview_frame)
-        
-        # Username label
-        username_layout = QHBoxLayout()
-        username_label = QLabel("Username:")
-        username_label.setFont(QFont('Arial', 12, QFont.Bold))
-        username_layout.addWidget(username_label)
-        
-        self.username_value = QLabel(self.username or "Not Logged In")
-        self.username_value.setFont(QFont('Arial', 12))
-        username_layout.addWidget(self.username_value)
-        username_layout.addStretch()
-        
-        # Total available resources progress bar
-        resource_layout = QVBoxLayout()
-        resource_label = QLabel("Total Computing Resources:")
-        resource_label.setFont(QFont('Arial', 12, QFont.Bold))
-        resource_layout.addWidget(resource_label)
-        
-        self.resource_progress = QProgressBar()
-        self.resource_progress.setTextVisible(True)
-        self.resource_progress.setFormat("Used: %v SUs / Total: %m SUs (%p%)")
-        resource_layout.addWidget(self.resource_progress)
-        
-        # Add to grid layout
-        overview_layout.addLayout(username_layout, 0, 0)
-        overview_layout.addLayout(resource_layout, 1, 0)
-        
+        main_layout = page_layout(self)
+
+        self.header = PageHeader(
+            "Balance",
+            "Service units (SUs) on each account you can charge. Free-tier jobs spend none.")
+        self.refresh_btn = button("Refresh", None, self.refresh_balance)
+        self.header.add_action(self.refresh_btn)
+        main_layout.addWidget(self.header)
+
+        tiles = QHBoxLayout()
+        tiles.setSpacing(12)
+        self.personal_tile = StatTile("PERSONAL ALLOCATION LEFT", "—", "")
+        self.used_tile = StatTile("USED BY YOU", "—", "across all accounts")
+        self.accounts_tile = StatTile("ACCOUNTS", "—", "")
+        for tile in (self.personal_tile, self.used_tile, self.accounts_tile):
+            tiles.addWidget(tile, 1)
+        main_layout.addLayout(tiles)
+
         # Accounts table
-        self.accounts_table = QTableWidget()
-        self.accounts_table.setColumnCount(5)
-        self.accounts_table.setHorizontalHeaderLabels([
-            "Account Name", "Personal Usage", "Total Account Usage", "Account Limit", "Available"
-        ])
-        self.accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.accounts_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.accounts_table.setSortingEnabled(True)
-        
-        # Create splitter, place overview at the top and details at the bottom
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(overview_frame)
-        splitter.addWidget(self.accounts_table)
-        
-        # Set default split ratio
-        splitter.setSizes([100, 500])
-        
-        # Add splitter to main layout
-        main_layout.addWidget(splitter)
-        
+        self.accounts_table = make_table(
+            ["Account", "Used by you", "Used by the account", "Limit", "Available"], stretch=2)
+        self.accounts_table.setItemDelegateForColumn(2, BarDelegate(self))
+        for col, width in enumerate((260, 140, 0, 150, 150)):
+            if width:
+                self.accounts_table.setColumnWidth(col, width)
+        main_layout.addWidget(self.accounts_table, 1)
+
         # Bottom: live status surface (spinner + state + collapsible log)
+        main_layout.addWidget(divider())
         self.status_view = LiveStatusView(self)
         main_layout.addWidget(self.status_view)
 
@@ -157,8 +111,6 @@ class BalanceWidget(QWidget):
             return  # a refresh is already in flight
 
         self.refresh_btn.setEnabled(False)
-        self.refresh_indicator.setText("Refreshing…")
-        self.refresh_indicator.setStyleSheet("color: orange;")
         self.status_view.start("Loading balance", "querying sbank on HPC3")
 
         # get_user_balance() emits balance_updated / error_occurred itself, which
@@ -177,121 +129,65 @@ class BalanceWidget(QWidget):
     def update_balance_data(self, balance_data):
         """Update balance data"""
         self.balance_data = balance_data
-
-        # Update UI
         self.update_ui()
-
-        # Restore UI state
         self.refresh_btn.setEnabled(True)
-        self.refresh_indicator.setText("Ready")
-        self.refresh_indicator.setStyleSheet("color: green;")
         self.status_view.finish_ok("balance updated")
-    
+
     def update_ui(self):
         """Update UI display"""
         if not self.balance_data:
             return
-        
-        # Update username
-        self.username_value.setText(self.balance_data['username'])
-        
-        # Update total resources progress bar
-        total_usage = self.balance_data['total_usage']
-        total_available = self.balance_data['total_available']
-        total_limit = total_usage + total_available
-        
-        self.resource_progress.setMaximum(total_limit if total_limit > 0 else 100)
-        self.resource_progress.setValue(total_usage)
-        
-        # Set progress bar color
-        usage_ratio = (total_usage / total_limit * 100) if total_limit > 0 else 0
-        self.set_progress_bar_color(usage_ratio)
-        
-        # Update accounts table
+        accounts = self.balance_data.get('accounts') or []
+        personal = [a for a in accounts if a['is_personal']]
+        if personal:
+            left = sum(a['available'] for a in personal)
+            limit = sum(a['account_limit'] for a in personal)
+            low = limit > 0 and left / limit < 0.1
+            self.personal_tile.set(f"{left:,}", f"of {limit:,} SUs",
+                                   tone="danger" if low else None)
+        else:
+            self.personal_tile.set("—", "no personal account found")
+        self.used_tile.set(f"{self.balance_data.get('total_usage', 0):,}")
+        shared = len(accounts) - len(personal)
+        self.accounts_tile.set(str(len(accounts)),
+                               f"{len(personal)} personal · {shared} shared")
         self.update_accounts_table()
-    
+
     def update_accounts_table(self):
         """Update accounts table"""
-        # Disable sorting to prevent confusion during reload
-        self.accounts_table.setSortingEnabled(False)
-        self.accounts_table.setRowCount(0)
-        
+        table = self.accounts_table
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
         if not self.balance_data or not self.balance_data['accounts']:
             return
-        
-        # Sort by account type: personal accounts first, shared accounts later
+
+        # Personal accounts first, shared accounts after.
         sorted_accounts = sorted(
-            self.balance_data['accounts'], 
+            self.balance_data['accounts'],
             key=lambda x: (0 if x['is_personal'] else 1, x['name'])
         )
-        
-        # Add a row for each account
+        table.setRowCount(len(sorted_accounts))
         for row, account in enumerate(sorted_accounts):
-            self.accounts_table.insertRow(row)
-            
-            # Account name
-            name_item = QTableWidgetItem(account['name'])
-            # Personal accounts are bold
+            name_item = SortItem(account['name'] + ("  ·  personal" if account['is_personal'] else ""))
             if account['is_personal']:
                 font = name_item.font()
                 font.setBold(True)
                 name_item.setFont(font)
-                name_item.setForeground(QBrush(QColor(0, 0, 255)))  # Personal accounts in blue
-            self.accounts_table.setItem(row, 0, name_item)
-            
-            # Personal usage
-            user_usage_item = QTableWidgetItem(f"{account['user_usage']:,}")
-            self.accounts_table.setItem(row, 1, user_usage_item)
-            
-            # Total account usage
-            account_usage_item = QTableWidgetItem(f"{account['account_usage']:,}")
-            self.accounts_table.setItem(row, 2, account_usage_item)
-            
-            # Account limit
-            account_limit_item = QTableWidgetItem(f"{account['account_limit']:,}")
-            self.accounts_table.setItem(row, 3, account_limit_item)
-            
-            # Available
-            available_item = QTableWidgetItem(f"{account['available']:,}")
-            # Set color based on availability
-            usage_ratio = (account['account_usage'] / account['account_limit'] * 100) if account['account_limit'] > 0 else 0
-            self.set_item_color_by_usage(available_item, usage_ratio)
-            self.accounts_table.setItem(row, 4, available_item)
-        
-        # Restore sorting
-        self.accounts_table.setSortingEnabled(True)
-    
-    def set_progress_bar_color(self, usage_ratio):
-        """Set progress bar color based on usage rate"""
-        if usage_ratio > 90:
-            self.resource_progress.setStyleSheet("""
-                QProgressBar::chunk { background-color: red; }
-                QProgressBar { text-align: center; }
-            """)
-        elif usage_ratio > 70:
-            self.resource_progress.setStyleSheet("""
-                QProgressBar::chunk { background-color: orange; }
-                QProgressBar { text-align: center; }
-            """)
-        else:
-            self.resource_progress.setStyleSheet("""
-                QProgressBar::chunk { background-color: green; }
-                QProgressBar { text-align: center; }
-            """)
-    
-    def set_item_color_by_usage(self, item, usage_ratio):
-        """Set table item color based on usage rate"""
-        if usage_ratio > 90:
-            item.setForeground(QBrush(QColor(255, 0, 0)))  # Red
-        elif usage_ratio > 70:
-            item.setForeground(QBrush(QColor(255, 165, 0)))  # Orange
-        else:
-            item.setForeground(QBrush(QColor(0, 128, 0)))  # Green
-    
+            table.setItem(row, 0, name_item)
+            table.setItem(row, 1, SortItem(f"{account['user_usage']:,}",
+                                           sort_key=account['user_usage']))
+            limit = account['account_limit']
+            frac = (account['account_usage'] / limit) if limit > 0 else 0.0
+            used = SortItem(f"{account['account_usage']:,}  ({frac:.0%})", sort_key=frac)
+            used.setData(DATA_ROLE, frac)
+            table.setItem(row, 2, used)
+            table.setItem(row, 3, SortItem(f"{limit:,}", sort_key=limit))
+            table.setItem(row, 4, SortItem(f"{account['available']:,}",
+                                           sort_key=account['available']))
+        table.setSortingEnabled(True)
+
     def show_error(self, error_msg, hint=""):
         """Display an error from either the manager (1 arg) or a worker (msg, hint)."""
-        self.refresh_indicator.setText("Error")
-        self.refresh_indicator.setStyleSheet("color: red;")
         logger.error("%s %s", error_msg, hint)
         self.status_view.finish_error(error_msg, hint)
-        self.refresh_btn.setEnabled(True) 
+        self.refresh_btn.setEnabled(True)

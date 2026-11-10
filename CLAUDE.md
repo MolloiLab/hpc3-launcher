@@ -99,9 +99,26 @@ The application follows a modular architecture with separation between business 
   - Job submission, cancellation, and status queries
   - Communicates with HPC cluster using paramiko SSH client
 
-- **node_status.py** - Retrieves and parses cluster node information
-  - Executes `sinfo` commands to get node status
-  - Parses node availability, CPU/memory usage
+- **cluster_view.py** - the read-only picture of the GPU nodes and the queue
+  - Free of PyQt and paramiko (except `ClusterInsights`, which holds the SSH
+    session), so the parsers are unit tested against captured Slurm output
+  - A paid partition and its free mirror are the *same nodes*: `sinfo` says a GPU
+    is used, `squeue` says whether a paid or a free job holds it. `attribute_gpus()`
+    splits each node's GPUs into paid / free / idle
+  - `room()` / `fit_report()` answer "would this request start right now?" -- an
+    idle GPU is often unusable because the node's cores or memory are taken
+  - `free_priority()` / `best_free_account()`: a free job's queue priority is
+    ~2000 x the fair-share factor of the account it is submitted under, and free
+    partitions accept every account, so the account choice decides the wait
+  - **`ClusterInsights` only runs queries** (`sinfo`, `squeue`, `sshare`,
+    `sbatch --test-only`). Nothing in this module may submit or cancel a job
+
+- **hpc3_constraints.py** - which launch requests HPC3 accepts (curated, not discovered)
+  - `tier_gpu_options(account, use_free)` is what makes the launch form a cascade:
+    **paid** partitions require an account whose suffix matches (`…_gpu32` for
+    `gpu32`), **free** partitions take any account
+  - A GPU model always pins its own partition family, whatever account or family
+    is passed alongside it, so A100 can never be paired with `gpu32`
 
 - **balance.py** - Account balance and resource quota tracking
   - Queries user's compute resource allocation
@@ -109,6 +126,9 @@ The application follows a modular architecture with separation between business 
 - **vscode_helper.py** - VSCode remote development configuration
   - Generates SSH config entries for VSCode
   - Manages remote connection settings
+  - `build_sbatch_command()` builds the one `sbatch` line, for both the real
+    submission and the `--test-only` start estimate; it validates every value it
+    interpolates, because a shell on the login node runs the result
 
 - **updater.py** - Holds only the `VERSION` constant (and `GITHUB_REPO`)
   - There is no in-app updater any more; Help → Download Latest Version… opens
@@ -135,10 +155,23 @@ The application follows a modular architecture with separation between business 
 Each widget corresponds to a page in the main application sidebar:
 
 - **login_dialog.py** - Initial login dialog for username/password/DUO
-- **task_manager_widget.py** - Slurm job management interface (sidebar: "Job Management")
-- **node_status_widget.py** - Cluster node status display (sidebar: "Node Status")
-- **vscode_widget.py** - VSCode configuration interface (sidebar: "VSCode Configuration")
-- **balance_widget.py** - Account balance display (sidebar: "Account Balance")
+- **vscode_widget.py** - launch and connect to VSCode sessions (sidebar: "Sessions",
+  the page the app opens on). The form is a cascade -- tier, account, GPU, GPU
+  count, memory, CPUs, run time -- and under it the free-tier advice: the account
+  with the best queue priority (chosen by default), whether the request fits an
+  idle GPU right now, and Slurm's start estimate on demand
+- **task_manager_widget.py** - Slurm job management interface (sidebar: "Jobs")
+- **node_status_widget.py** - paid / free / idle GPUs per model and per node, the
+  pending queue, and your fair share per account (sidebar: "GPUs & nodes")
+- **balance_widget.py** - Account balance display (sidebar: "Balance")
+
+Look and layout live in two shared files; pages must not hard-code colours:
+
+- **theme.py** - the palette (light and dark, following the OS; `HPC3_THEME=light|dark`
+  overrides), the Fusion style and the single stylesheet. Widgets opt into variants
+  with dynamic properties (`variant="primary"`, `role="title"`, `card=True`)
+- **components.py** - `Card`, `PageHeader`, `StatTile`, `SegmentedControl`,
+  `SegmentBar`, `make_table()` and the delegates that draw pills and bars in cells
 
 ### Application Flow
 
@@ -150,9 +183,9 @@ Each widget corresponds to a page in the main application sidebar:
    - Initializes MainWindow with user credentials
 
 2. **MainWindow** (`main.py:MainWindow`):
-   - Sidebar navigation with QListWidget
+   - Sidebar navigation with QListWidget (the signed-in user is shown at its foot)
    - Stacked pages with QStackedWidget
-   - Status bar shows logged-in username
+   - One shared `ClusterInsights` feeds the Sessions and GPUs & nodes pages
    - Menu bar includes File→Exit and Help→Download Latest Version…/About
 
 3. **SSH Key Management**:
@@ -235,6 +268,13 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - `tests/test_ssh_config_blocks.py` — block arithmetic in `modules/ssh_config_blocks.py`.
 - `tests/test_exclude_nodes.py` — the VSCode panel's "Exclude Nodes" option: the
   `--exclude` list is interpolated into a shell command, so bad names must raise.
+- `tests/test_cluster_view.py` — the GPU/queue snapshot, parsed from
+  `tests/fixtures/cluster_snapshot.txt` (real HPC3 output with names replaced).
+- `tests/test_launch_request.py` — which GPU each tier + account can reach, and the
+  `sbatch` line that results (hostile values must raise).
+- `tests/test_launch_form.py` — builds the real Sessions form under Qt's offscreen
+  platform and clicks through it: no sequence of picks may produce an invalid
+  request. It patches `QSettings` to a temp file; keep it that way.
 - `tests/test_environment.py` — a dependency-check script, not a unittest module.
 
 CI runs this suite on **ubuntu, macOS and Windows**. The Windows job matters: the

@@ -25,11 +25,12 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-# Shared palette (loosely borrowed from PlutoSpace's remote-session states).
-ACCENT = "#5e7be1"   # busy / working
-OK = "#2ecc71"       # ready
-ERROR = "#e74c3c"    # failed
-MUTED = "#888888"    # idle / detail text
+from ui import theme
+
+
+def _c(key):
+    """A theme colour, looked up at use so it follows light/dark."""
+    return theme.colors()[key]
 
 
 class Spinner(QWidget):
@@ -39,7 +40,7 @@ class Spinner(QWidget):
         super().__init__(parent)
         self._angle = 0
         self._lw = line_width
-        self._color = QColor(ACCENT)
+        self._color = QColor(_c("accent"))
         self.setFixedSize(size, size)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -105,7 +106,7 @@ class LiveStatusView(QWidget):
     def _build_ui(self):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(4)
+        outer.setSpacing(6)
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -129,7 +130,7 @@ class LiveStatusView(QWidget):
         bold.setBold(True)
         self.state_label.setFont(bold)
         self.detail_label = QLabel("")
-        self.detail_label.setStyleSheet(f"color: {MUTED};")
+        self.detail_label.setStyleSheet(f"color: {_c('muted')};")
         self.detail_label.setWordWrap(True)
         text_col.addWidget(self.state_label)
         text_col.addWidget(self.detail_label)
@@ -147,7 +148,8 @@ class LiveStatusView(QWidget):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(2000)  # ring buffer -- never grows unbounded
-        self.log.setMinimumHeight(120)
+        self.log.setMinimumHeight(110)
+        self.log.setMaximumHeight(180)
         self.log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         mono = QFont("Menlo")
         mono.setStyleHint(QFont.Monospace)
@@ -171,9 +173,9 @@ class LiveStatusView(QWidget):
     def start(self, state="Working…", detail="", show_log=False):
         self.log.clear()
         self.icon.setText("")
-        self.spinner.set_color(ACCENT)
+        self.spinner.set_color(_c("accent"))
         self.spinner.start()
-        self.state_label.setStyleSheet(f"color: {ACCENT};")
+        self.state_label.setStyleSheet(f"color: {_c('accent')};")
         self.state_label.setText(self._pretty(state))
         self.detail_label.setText(detail)
         if show_log:
@@ -185,7 +187,7 @@ class LiveStatusView(QWidget):
         # Connected to SSHWorker.progress(state, detail).
         self.spinner.start()
         self.icon.setText("")
-        self.state_label.setStyleSheet(f"color: {ACCENT};")
+        self.state_label.setStyleSheet(f"color: {_c('accent')};")
         self.state_label.setText(self._pretty(state))
         self.detail_label.setText(detail)
         self.append_log(f"{self._pretty(state)}{(' — ' + detail) if detail else ''}")
@@ -197,9 +199,9 @@ class LiveStatusView(QWidget):
 
     def finish_ok(self, detail=""):
         self.spinner.stop()
-        self.icon.setStyleSheet(f"color: {OK};")
+        self.icon.setStyleSheet(f"color: {_c('ok')};")
         self.icon.setText("✓")
-        self.state_label.setStyleSheet(f"color: {OK};")
+        self.state_label.setStyleSheet(f"color: {_c('ok')};")
         self.state_label.setText("Done")
         self.detail_label.setText(detail)
         if detail:
@@ -208,9 +210,9 @@ class LiveStatusView(QWidget):
     def finish_error(self, message, hint=""):
         # Connected to SSHWorker.failed(message, hint).
         self.spinner.stop()
-        self.icon.setStyleSheet(f"color: {ERROR};")
+        self.icon.setStyleSheet(f"color: {_c('danger')};")
         self.icon.setText("✕")
-        self.state_label.setStyleSheet(f"color: {ERROR};")
+        self.state_label.setStyleSheet(f"color: {_c('danger')};")
         self.state_label.setText("Failed")
         self.detail_label.setText(hint or message)
         self.append_log(f"✕ {message}")
@@ -222,8 +224,8 @@ class LiveStatusView(QWidget):
     def reset(self):
         self.spinner.stop()
         self.icon.setText("·")
-        self.icon.setStyleSheet(f"color: {MUTED};")
-        self.state_label.setStyleSheet(f"color: {MUTED};")
+        self.icon.setStyleSheet(f"color: {_c('muted')};")
+        self.state_label.setStyleSheet(f"color: {_c('muted')};")
         self.state_label.setText("Idle")
         self.detail_label.setText("")
         self.log.clear()

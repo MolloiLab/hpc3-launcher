@@ -1,0 +1,395 @@
+hpc3-14-00                    free                mixed               34/6/0/40           192000        182272        (null)                                  (null)
+hpc3-14-00                    standard*           mixed               34/6/0/40           192000        182272        (null)                                  (null)
+hpc3-14-01                    free                mixed               34/6/0/40           192000        172032        (null)                                  (null)
+hpc3-14-01                    standard*           mixed               34/6/0/40           192000        172032        (null)                                  (null)
+hpc3-14-02                    free                mixed               33/7/0/40           192000        178176        (null)                                  (null)
+hpc3-14-02                    standard*           mixed               33/7/0/40           192000        178176        (null)                                  (null)
+hpc3-gpu-16-00                free-gpu            mixed-              22/18/0/40          192000        169984        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-00                gpu                 mixed-              22/18/0/40          192000        169984        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-01                free-gpu            mixed-              21/19/0/40          192000        192000        gpu:V100:4                              gpu:V100:1(IDX:0)
+hpc3-gpu-16-01                gpu                 mixed-              21/19/0/40          192000        192000        gpu:V100:4                              gpu:V100:1(IDX:0)
+hpc3-gpu-16-02                free-gpu            mixed-              15/25/0/40          192000        109568        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-02                gpu                 mixed-              15/25/0/40          192000        109568        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-03                free-gpu            mixed-              16/24/0/40          192000        125952        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-03                gpu                 mixed-              16/24/0/40          192000        125952        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-04                free-gpu            mixed-              13/27/0/40          192000        93184         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-04                gpu                 mixed-              13/27/0/40          192000        93184         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-05                free-gpu            mixed               25/15/0/40          192000        128000        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-05                gpu                 mixed               25/15/0/40          192000        128000        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-06                free-gpu            mixed-              21/19/0/40          192000        147456        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-06                gpu                 mixed-              21/19/0/40          192000        147456        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-07                free-gpu            mixed               16/24/0/40          192000        106496        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-16-07                gpu                 mixed               16/24/0/40          192000        106496        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-17-02                free-gpu            mixed-              19/21/0/40          192000        150528        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-17-02                gpu                 mixed-              19/21/0/40          192000        150528        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-17-03                free-gpu            mixed-              9/31/0/40           192000        55296         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-17-03                gpu                 mixed-              9/31/0/40           192000        55296         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-17-04                free-gpu            mixed               16/24/0/40          192000        106496        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-17-04                gpu                 mixed               16/24/0/40          192000        106496        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-18-00                free-gpu            mixed-              10/30/0/40          386000        49152         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-18-00                gpu                 mixed-              10/30/0/40          386000        49152         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-18-01                free-gpu            mixed-              10/30/0/40          192000        60416         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-18-01                gpu                 mixed-              10/30/0/40          192000        60416         gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-18-02                free-gpu            mixed               20/20/0/40          192000        163840        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-18-02                gpu                 mixed               20/20/0/40          192000        163840        gpu:V100:4                              gpu:V100:4(IDX:0-3)
+hpc3-gpu-18-03                free-gpu            mixed-              17/15/0/32          256000        114688        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-18-03                gpu                 mixed-              17/15/0/32          256000        114688        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-18-04                free-gpu            mixed-              17/15/0/32          256000        114688        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-18-04                gpu                 mixed-              17/15/0/32          256000        114688        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-24-05                free-gpu            mixed-              13/19/0/32          256000        90112         gpu:A30:4                               gpu:A30:3(IDX:0-1,3)
+hpc3-gpu-24-05                gpu                 mixed-              13/19/0/32          256000        90112         gpu:A30:4                               gpu:A30:3(IDX:0-1,3)
+hpc3-gpu-24-06                free-gpu            mixed-              30/2/0/32           256000        104448        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-24-06                gpu                 mixed-              30/2/0/32           256000        104448        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-24-07                free-gpu            mixed-              17/15/0/32          256000        101376        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-24-07                gpu                 mixed-              17/15/0/32          256000        101376        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-24-08                free-gpu            mixed-              23/9/0/32           256000        163840        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-24-08                gpu                 mixed-              23/9/0/32           256000        163840        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-00               free-gpu            mixed-              19/45/0/64          3095000       147456        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-00               gpu-hugemem         mixed-              19/45/0/64          3095000       147456        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-01               free-gpu            allocated           32/0/0/32           256000        122880        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-01               gpu                 allocated           32/0/0/32           256000        122880        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-02               free-gpu            mixed               31/1/0/32           256000        131072        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-02               gpu                 mixed               31/1/0/32           256000        131072        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-03               free-gpu            mixed-              28/4/0/32           256000        102400        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-03               gpu                 mixed-              28/4/0/32           256000        102400        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-04               free-gpu            mixed-              17/15/0/32          256000        134144        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-04               gpu                 mixed-              17/15/0/32          256000        134144        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-05               free-gpu            mixed-              20/12/0/32          256000        122880        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-05               gpu                 mixed-              20/12/0/32          256000        122880        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-k54-06               gpu32               mixed-              22/26/0/48          256000        112640        gpu:L40S:4                              gpu:L40S:4(IDX:0-3)
+hpc3-gpu-k54-06               free-gpu32          mixed-              22/26/0/48          256000        112640        gpu:L40S:4                              gpu:L40S:4(IDX:0-3)
+hpc3-gpu-k54-07               gpu32               mixed-              17/31/0/48          256000        83968         gpu:L40S:4                              gpu:L40S:4(IDX:0-3)
+hpc3-gpu-k54-07               free-gpu32          mixed-              17/31/0/48          256000        83968         gpu:L40S:4                              gpu:L40S:4(IDX:0-3)
+hpc3-gpu-k54-08               gpu32               mixed-              20/28/0/48          1031000       77824         gpu:L40S:4                              gpu:L40S:4(IDX:0-3)
+hpc3-gpu-k54-08               free-gpu32          mixed-              20/28/0/48          1031000       77824         gpu:L40S:4                              gpu:L40S:4(IDX:0-3)
+hpc3-gpu-l54-00               free-gpu            allocated           32/0/0/32           256000        129024        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-00               gpu                 allocated           32/0/0/32           256000        129024        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-01               free-gpu            mixed-              22/10/0/32          256000        147456        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-01               gpu                 mixed-              22/10/0/32          256000        147456        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-02               free-gpu            mixed-              22/10/0/32          256000        155648        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-02               gpu                 mixed-              22/10/0/32          256000        155648        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-03               free-gpu            mixed-              16/16/0/32          256000        98304         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-03               gpu                 mixed-              16/16/0/32          256000        98304         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-04               free-gpu            mixed               6/26/0/32           256000        49152         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-04               gpu                 mixed               6/26/0/32           256000        49152         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-05               free-gpu            mixed-              12/20/0/32          256000        61440         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-05               gpu                 mixed-              12/20/0/32          256000        61440         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-06               free-gpu            mixed-              12/20/0/32          256000        61440         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-06               gpu                 mixed-              12/20/0/32          256000        61440         gpu:A100:2                              gpu:A100:2(IDX:0-1)
+hpc3-gpu-l54-07               free-gpu            mixed-              13/19/0/32          256000        76800         gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-07               gpu                 mixed-              13/19/0/32          256000        76800         gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-08               gpu                 mixed-              18/14/0/32          257000        131072        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-08               free-gpu            mixed-              18/14/0/32          257000        131072        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-09               gpu                 mixed-              17/15/0/32          224000        114688        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-l54-09               free-gpu            mixed-              17/15/0/32          224000        114688        gpu:A30:4                               gpu:A30:4(IDX:0-3)
+hpc3-gpu-m54-00               gpu32               allocated           32/0/0/32           257000        196608        gpu:RTX6000:4                           gpu:RTX6000:4(IDX:0-3)
+hpc3-gpu-m54-00               free-gpu32          allocated           32/0/0/32           257000        196608        gpu:RTX6000:4                           gpu:RTX6000:4(IDX:0-3)
+hpc3-gpu-m54-01               gpu32               mixed               28/4/0/32           257000        172032        gpu:RTX6000:4                           gpu:RTX6000:4(IDX:0-3)
+hpc3-gpu-m54-01               free-gpu32          mixed               28/4/0/32           257000        172032        gpu:RTX6000:4                           gpu:RTX6000:4(IDX:0-3)
+hpc3-gpu-m54-02               gpu32               mixed-              30/2/0/32           257000        184320        gpu:RTX6000:4                           gpu:RTX6000:3(IDX:0-2)
+hpc3-gpu-m54-02               free-gpu32          mixed-              30/2/0/32           257000        184320        gpu:RTX6000:4                           gpu:RTX6000:3(IDX:0-2)
+hpc3-gpu-n54-00               gpu32               mixed               23/9/0/32           257000        135168        gpu:RTX6000:4                           gpu:RTX6000:3(IDX:0-2)
+hpc3-gpu-n54-00               free-gpu32          mixed               23/9/0/32           257000        135168        gpu:RTX6000:4                           gpu:RTX6000:3(IDX:0-2)
+hpc3-gpu-n54-01               gpu32               mixed-              22/10/0/32          257000        135168        gpu:RTX6000:4                           gpu:RTX6000:4(IDX:0-3)
+hpc3-gpu-n54-01               free-gpu32          mixed-              22/10/0/32          257000        135168        gpu:RTX6000:4                           gpu:RTX6000:4(IDX:0-3)
+hpc3-gpu-n54-02               gpu32               allocated           32/0/0/32           257000        184320        gpu:RTX6000:4                           gpu:RTX6000:2(IDX:0-1)
+hpc3-gpu-n54-02               free-gpu32          allocated           32/0/0/32           257000        184320        gpu:RTX6000:4                           gpu:RTX6000:2(IDX:0-1)
+hpc3-gpu-n54-03               gpu32               allocated           32/0/0/32           257000        192512        gpu:RTX6000:4                           gpu:RTX6000:3(IDX:0-2)
+hpc3-gpu-n54-03               free-gpu32          allocated           32/0/0/32           257000        192512        gpu:RTX6000:4                           gpu:RTX6000:3(IDX:0-2)
+@@HPC3-SECTION@@
+free-gpu|hpc3-gpu-24-07|gres/gpu:A30:1|user01
+free-gpu|hpc3-gpu-24-08|gres/gpu:A30:1|user01
+free-gpu|hpc3-gpu-k54-05|gres/gpu:A30:1|user01
+free-gpu|hpc3-gpu-l54-01|gres/gpu:A30:1|user01
+free-gpu|hpc3-gpu-16-[02-03],hpc3-gpu-17-02|gres/gpu:1|user02
+free-gpu|hpc3-gpu-16-05|gres/gpu:1|user03
+free-gpu|hpc3-gpu-16-02|gres/gpu:1|user03
+free-gpu|hpc3-gpu-17-04|gres/gpu:1|user03
+free-gpu|hpc3-gpu-k54-04|gres/gpu:1|user03
+free-gpu|hpc3-gpu-k54-00|gres/gpu:1|user03
+free-gpu|hpc3-gpu-16-03|gres/gpu:1|user03
+free-gpu|hpc3-gpu-16-03|gres/gpu:1|user03
+free-gpu|hpc3-gpu-16-03|gres/gpu:1|user03
+free-gpu|hpc3-gpu-16-05|gres/gpu:1|user03
+free-gpu|hpc3-gpu-18-00|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-16-07|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-17-04|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-k54-04|gres/gpu:1|user05
+free-gpu|hpc3-gpu-l54-07|gres/gpu:1|user05
+free-gpu|hpc3-gpu-24-07|gres/gpu:1|user05
+free-gpu|hpc3-gpu-17-03|gres/gpu:1|user05
+free-gpu|hpc3-gpu-16-04|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-16-06|gres/gpu:1|user03
+free-gpu|hpc3-gpu-18-01|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-17-03|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-18-00|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-18-00|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-18-01|gres/gpu:V100:1|user04
+free-gpu|hpc3-gpu-17-03|gres/gpu:1|user06
+free-gpu|hpc3-gpu-16-04|gres/gpu:1|user05
+free-gpu|hpc3-gpu-18-04|gres/gpu:1|user06
+free-gpu|hpc3-gpu-18-01|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-04|gres/gpu:1|user06
+free-gpu|hpc3-gpu-18-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-18-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-18-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-18-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-18-03|gres/gpu:1|user06
+free-gpu|hpc3-gpu-24-05|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-l54-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-l54-08|gres/gpu:1|user06
+free-gpu|hpc3-gpu-16-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-16-07|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-00|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-01|gres/gpu:1|user06
+free-gpu|hpc3-gpu-l54-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-16-04|gres/gpu:1|user06
+free-gpu|hpc3-gpu-16-07|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-00|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-01|gres/gpu:1|user06
+free-gpu|hpc3-gpu-k54-02|gres/gpu:1|user06
+free-gpu|hpc3-gpu-16-02|gres/gpu:1|user07
+free-gpu|hpc3-gpu-k54-03|gres/gpu:1|user08
+free-gpu|hpc3-gpu-k54-00|gres/gpu:1|user07
+free-gpu|hpc3-gpu-18-00|gres/gpu:1|user07
+free-gpu|hpc3-gpu-16-00|gres/gpu:1|user08
+free-gpu|hpc3-gpu-16-00|gres/gpu:1|user08
+free-gpu|hpc3-gpu-16-04|gres/gpu:1|user08
+free-gpu|hpc3-gpu-17-04|gres/gpu:1|user08
+free-gpu|hpc3-gpu-24-08|gres/gpu:1|user08
+free-gpu|hpc3-gpu-16-00|gres/gpu:0|user09
+free-gpu|hpc3-gpu-l54-00|gres/gpu:1|user10
+free-gpu|hpc3-gpu-17-02|gres/gpu:1|user10
+free-gpu|hpc3-gpu-17-02|gres/gpu:1|user10
+free-gpu|hpc3-gpu-17-02|gres/gpu:1|user10
+free-gpu|hpc3-gpu-16-06|gres/gpu:1|user10
+free-gpu|hpc3-gpu-16-00|gres/gpu:1|user11
+free-gpu|hpc3-gpu-16-00|gres/gpu:1|user11
+free-gpu|hpc3-gpu-18-01|gres/gpu:1|user11
+free-gpu|hpc3-gpu-17-03|gres/gpu:1|user11
+free-gpu|hpc3-gpu-l54-02|gres/gpu:A30:1|user12
+free-gpu|hpc3-gpu-k54-03|gres/gpu:A30:1|user13
+free-gpu|hpc3-gpu-16-06|gres/gpu:1|user14
+free-gpu32|hpc3-gpu-m54-00|gres/gpu:RTX6000:1|user15
+free-gpu32|hpc3-gpu-m54-00|gres/gpu:RTX6000:1|user15
+free-gpu32|hpc3-gpu-m54-02|gres/gpu:RTX6000:1|user15
+free-gpu32|hpc3-gpu-m54-02|gres/gpu:RTX6000:1|user15
+free-gpu32|hpc3-gpu-m54-02|gres/gpu:RTX6000:1|user15
+free-gpu32|hpc3-gpu-n54-03|gres/gpu:RTX6000:1|user15
+free-gpu32|hpc3-gpu-n54-01|gres/gpu:RTX6000:1|user15
+free-gpu32|hpc3-gpu-m54-01|gres/gpu:RTX6000:1|user16
+free-gpu32|hpc3-gpu-m54-01|gres/gpu:RTX6000:1|user16
+free-gpu32|hpc3-gpu-m54-01|gres/gpu:RTX6000:1|user16
+free-gpu32|hpc3-gpu-k54-07|gres/gpu:L40S:1|user17
+free-gpu32|hpc3-gpu-k54-06|gres/gpu:1|user18
+free-gpu32|hpc3-gpu-n54-01|gres/gpu:RTX6000:1|user19
+free-gpu32|hpc3-gpu-n54-01|gres/gpu:RTX6000:1|user19
+free-gpu32|hpc3-gpu-n54-01|gres/gpu:RTX6000:1|user19
+free-gpu32|hpc3-gpu-k54-06|gres/gpu:1|user07
+free-gpu32|hpc3-gpu-m54-00|gres/gpu:RTX6000:1|user19
+free-gpu32|hpc3-gpu-m54-01|gres/gpu:RTX6000:1|user19
+free-gpu32|hpc3-gpu-k54-08|gres/gpu:L40S:1|user20
+free-gpu32|hpc3-gpu-k54-08|gres/gpu:L40S:1|user20
+free-gpu32|hpc3-gpu-k54-06|gres/gpu:L40S:1|user20
+free-gpu32|hpc3-gpu-n54-00|gres/gpu|user21
+free-gpu32|hpc3-gpu-n54-00|gres/gpu:2|user22
+gpu|hpc3-gpu-l54-04|gres/gpu:A100:2|user23
+gpu|hpc3-gpu-l54-03|gres/gpu:A100:1|user24
+gpu|hpc3-gpu-l54-03|gres/gpu:A100:1|user24
+gpu|hpc3-gpu-l54-05|gres/gpu:A100:1|user24
+gpu|hpc3-gpu-l54-06|gres/gpu:A100:1|user24
+gpu|hpc3-gpu-k54-01|gres/gpu:1|user25
+gpu|hpc3-gpu-16-01|gres/gpu:V100:1|user26
+gpu|hpc3-gpu-k54-01|gres/gpu:A30:1|user27
+gpu|hpc3-gpu-24-06|gres/gpu:A30:1|user27
+gpu|hpc3-gpu-k54-02|gres/gpu:A30:1|user27
+gpu|hpc3-gpu-k54-03|gres/gpu:A30:1|user27
+gpu|hpc3-gpu-l54-00|gres/gpu:A30:1|user27
+gpu|hpc3-gpu-24-08|gres/gpu:A30:1|user28
+gpu|hpc3-gpu-k54-04|gres/gpu:A30:1|user28
+gpu|hpc3-gpu-l54-01|gres/gpu:A30:1|user28
+gpu|hpc3-gpu-24-06|gres/gpu:A30:1|user28
+gpu|hpc3-gpu-l54-00|gres/gpu:A30:1|user28
+gpu|hpc3-gpu-l54-09|gres/gpu:A30:1|user29
+gpu|hpc3-gpu-k54-03|gres/gpu:A30:1|user29
+gpu|hpc3-gpu-l54-08|gres/gpu:A30:1|user29
+gpu|hpc3-gpu-18-03|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-02|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-18-03|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-24-07|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-24-05|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-07|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-07|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-k54-05|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-k54-05|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-18-04|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-18-03|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-24-05|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-k54-05|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-01|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-01|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-24-07|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-24-08|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-24-06|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-18-04|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-09|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-09|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-18-04|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-09|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-07|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-08|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-08|gres/gpu:A30:1|user30
+gpu|hpc3-gpu-l54-00|gres/gpu:A30:1|user31
+gpu|hpc3-gpu-24-06|gres/gpu:A30:1|user31
+gpu|hpc3-gpu-16-06|gres/gpu:V100:1|user32
+gpu|hpc3-gpu-17-04|gres/gpu:V100:1|user32
+gpu|hpc3-gpu-16-07|gres/gpu:V100:1|user32
+gpu|hpc3-gpu-l54-06|gres/gpu:A100:1|user33
+gpu|hpc3-gpu-l54-05|gres/gpu:A100:1|user33
+gpu|hpc3-gpu-16-05|gres/gpu:2|user34
+gpu32|hpc3-gpu-m54-00|gres/gpu:RTX6000:1|user35
+gpu32|hpc3-gpu-n54-02|gres/gpu:RTX6000:2|user36
+gpu32|hpc3-gpu-n54-03|gres/gpu:RTX6000:2|user37
+gpu32|hpc3-gpu-k54-06|gres/gpu:1|user38
+gpu32|hpc3-gpu-k54-07|gres/gpu:1|user38
+gpu32|hpc3-gpu-k54-08|gres/gpu:1|user38
+gpu32|hpc3-gpu-k54-07|gres/gpu:1|user38
+gpu32|hpc3-gpu-k54-08|gres/gpu:1|user38
+gpu32|hpc3-gpu-k54-07|gres/gpu:1|user38
+@@HPC3-SECTION@@
+free-gpu|ReqNodeNotAvail, May be reserved for other job|2112|gres/gpu:A100:1|user39
+free-gpu|Dependency|2109|gres/gpu:A100:1|user39
+free-gpu|JobArrayTaskLimit|983|gres/gpu:1|user02
+free-gpu|Dependency|982|gres/gpu:1|user02
+free-gpu|Dependency|982|gres/gpu:1|user02
+free-gpu|Dependency|982|gres/gpu:1|user02
+free-gpu|Dependency|982|gres/gpu:1|user02
+free-gpu|Dependency|982|gres/gpu:1|user02
+free-gpu|DependencyNeverSatisfied|982|gres/gpu:1|user02
+free-gpu|DependencyNeverSatisfied|982|gres/gpu:1|user02
+free-gpu|DependencyNeverSatisfied|982|gres/gpu:1|user02
+free-gpu|DependencyNeverSatisfied|982|gres/gpu:1|user02
+free-gpu|DependencyNeverSatisfied|982|gres/gpu:1|user02
+free-gpu|JobArrayTaskLimit|964|gres/gpu:1|user03
+free-gpu|JobArrayTaskLimit|964|gres/gpu:1|user03
+free-gpu|JobArrayTaskLimit|964|gres/gpu:1|user03
+free-gpu|JobArrayTaskLimit|964|gres/gpu:1|user03
+free-gpu|JobArrayTaskLimit|964|gres/gpu:1|user03
+free-gpu|ReqNodeNotAvail, May be reserved for other job|953|gres/gpu:A100:1|user40
+free-gpu|ReqNodeNotAvail, May be reserved for other job|915|gres/gpu:A100:1|user41
+free-gpu|QOSMaxJobsPerUserLimit|904|gres/gpu:1|user06
+free-gpu|QOSMaxJobsPerUserLimit|904|gres/gpu:1|user06
+free-gpu|QOSMaxJobsPerUserLimit|904|gres/gpu:1|user06
+free-gpu|QOSMaxJobsPerUserLimit|904|gres/gpu:1|user06
+free-gpu|Priority|903|gres/gpu:A30:2|user42
+free-gpu|Resources|903|gres/gpu:A30:2|user42
+free-gpu|Resources|902|gres/gpu:A100:1|user42
+free-gpu|Resources|902|gres/gpu:A100:1|user42
+free-gpu|Resources|902|gres/gpu:A100:1|user42
+free-gpu|Resources|902|gres/gpu:A100:1|user42
+free-gpu|Resources|902|gres/gpu:A100:1|user42
+free-gpu|None|902|gres/gpu:A100:1|user42
+free-gpu|Priority|902|gres/gpu:A100:1|user42
+free-gpu|Priority|902|gres/gpu:A100:1|user42
+free-gpu|None|902|gres/gpu:A100:1|user42
+free-gpu|Priority|902|gres/gpu:A100:1|user42
+free-gpu|Priority|902|gres/gpu:A100:1|user42
+free-gpu|Priority|902|gres/gpu:A100:1|user42
+free-gpu|None|902|gres/gpu:A30:2|user42
+free-gpu|None|902|gres/gpu:A30:2|user42
+free-gpu|None|902|gres/gpu:A30:2|user42
+free-gpu|QOSMaxJobsPerUserLimit|891|gres/gpu:1|user06
+free-gpu|DependencyNeverSatisfied|779|gres/gpu:A30:1|user43
+free-gpu|None|661|gres/gpu:1|user10
+free-gpu|JobHeldUser|0|gres/gpu:1|user10
+free-gpu|JobHeldUser|0|gres/gpu:1|user10
+free-gpu|JobHeldUser|0|gres/gpu:1|user10
+free-gpu|JobHeldAdmin|0|gres/gpu:1|user10
+free-gpu,free-gpu32|Priority|185|gres/gpu:1|user44
+free-gpu,free-gpu32|Priority|185|gres/gpu:1|user44
+free-gpu,free-gpu32|Priority|184|gres/gpu:1|user44
+free-gpu,free-gpu32|Priority|184|gres/gpu:1|user44
+free-gpu32|Resources|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|Resources|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|Resources|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2112|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2111|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2111|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2111|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2111|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2111|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|JobArrayTaskLimit|2110|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2109|gres/gpu:RTX6000:1|user45
+free-gpu32|Priority|2109|gres/gpu:RTX6000:1|user15
+free-gpu32|Priority|2109|gres/gpu:RTX6000:1|user15
+free-gpu32|None|774|gres/gpu:RTX6000:1|user19
+free-gpu32|None|774|gres/gpu:RTX6000:1|user19
+free-gpu32|None|774|gres/gpu:RTX6000:1|user19
+free-gpu32|Priority|622|gres/gpu:RTX6000:1|user46
+free-gpu32|Priority|498|gres/gpu:L40S:1|user20
+free-gpu32|None|426|gres/gpu:RTX6000:1|user47
+free-gpu32|None|383|gres/gpu:RTX6000:2|user37
+free-gpu32|None|383|gres/gpu:RTX6000:2|user37
+free-gpu32|Priority|352|gres/gpu:RTX6000:4|user12
+free-gpu32|Priority|329|gres/gpu:RTX6000:2|user12
+free-gpu32|Priority|276|gres/gpu:RTX6000:1|user19
+free-gpu32|Priority|274|gres/gpu:RTX6000:1|user19
+free-gpu32|Priority|193|gres/gpu:RTX6000:1|user48
+free-gpu32|Priority|192|gres/gpu:RTX6000:1|user48
+free-gpu32|Priority|192|gres/gpu:RTX6000:1|user48
+free-gpu32|Priority|187|gres/gpu:RTX6000:1|user49
+free-gpu32,free-gpu|ReqNodeNotAvail, May be reserved for other job|1015|gres/gpu:1|user18
+free-gpu32,free-gpu|ReqNodeNotAvail, May be reserved for other job|1015|gres/gpu:1|user18
+free-gpu32,free-gpu|Dependency|1015|gres/gpu:1|user18
+gpu|Priority|818|gres/gpu:A100:1|user24
+gpu|Resources|818|gres/gpu:A100:1|user24
+gpu|Priority|634|gres/gpu:A100:1|user50
+gpu|Priority|633|gres/gpu:A100:1|user50
+gpu|Priority|609|gres/gpu:A100:1|user40
+gpu|Priority|551|gres/gpu:A100:1|user51
+gpu|Priority|513|gres/gpu:A100:1|user52
+gpu|Dependency|508|gres/gpu:A30:1|user28
+gpu|Dependency|508|gres/gpu:A30:1|user28
+gpu|Dependency|508|gres/gpu:A30:1|user28
+gpu|Dependency|508|gres/gpu:A30:1|user28
+gpu|Dependency|465|gres/gpu:A30:1|user31
+gpu|Dependency|465|gres/gpu:A30:1|user31
+gpu|DependencyNeverSatisfied|393|gres/gpu:1|user53
+gpu|DependencyNeverSatisfied|393|gres/gpu:1|user53
+gpu|DependencyNeverSatisfied|393|gres/gpu:1|user53
+gpu|DependencyNeverSatisfied|393|gres/gpu:1|user53
+gpu|DependencyNeverSatisfied|393|gres/gpu:1|user53
+gpu|DependencyNeverSatisfied|393|gres/gpu:1|user53
+gpu32|JobHeldUser|0|gres/gpu:RTX6000:2|user54
+gpu32|JobHeldUser|0|gres/gpu:RTX6000:2|user54
+@@HPC3-SECTION@@
+demo|0.371566
+pi_lab|0.380101
+pi_lab_gpu|1.000000
+pi_lab_gpu32|0.136570

@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                           QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, 
-                           QFormLayout, QLineEdit, QComboBox, QSpinBox, 
-                           QGroupBox, QSplitter, QMessageBox, QMenu, QDialog, 
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+                           QTableWidgetItem, QTabWidget, QTextEdit,
+                           QFormLayout, QLineEdit, QComboBox, QSpinBox,
+                           QGroupBox, QMessageBox, QMenu, QDialog,
                            QDialogButtonBox, QFileDialog, QCheckBox, QFrame)
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtGui import QFont
 import logging
-import os
 import time
 from modules.slurm import SlurmManager
 from modules.auth import HPC_SERVER, get_all_existing_users
@@ -19,6 +18,16 @@ from modules.hpc3_constraints import (account_family, is_gpu_family, family_gpu_
                                       parse_mem_gb, parse_runtime_hours)
 from core.ssh_session import SSHWorker
 from ui.status_view import LiveStatusView
+from ui.components import (PageHeader, SegmentedControl, PillDelegate, button, label,
+                           divider, make_table, page_layout)
+
+# Columns of the jobs table that code refers to by position.
+COL_STATE, COL_QUEUE, COL_REASON = 2, 3, 8
+
+
+def _tier_tone(partition):
+    return "free" if (partition or "").startswith("free") else "paid"
+
 
 class JobSubmissionDialog(QDialog):
     """Job Submission Dialog"""
@@ -62,8 +71,8 @@ class JobSubmissionDialog(QDialog):
             self.gpu_combo.addItem("Select an account first", None)
             self.gpu_combo.setEnabled(False)
         else:
-            for label, value in family_gpu_options(account_family(account)):
-                self.gpu_combo.addItem(label, value)
+            for text, value in family_gpu_options(account_family(account)):
+                self.gpu_combo.addItem(text, value)
             self.gpu_combo.setEnabled(True)
             self.gpu_combo.setCurrentIndex(0)
         self.gpu_combo.blockSignals(False)
@@ -259,7 +268,10 @@ class JobSubmissionDialog(QDialog):
         
         # Script editor
         self.script_editor = QTextEdit()
-        self.script_editor.setFont(QFont("Courier New", 10))
+        mono = QFont("Menlo")
+        mono.setStyleHint(QFont.Monospace)
+        mono.setPixelSize(12)
+        self.script_editor.setFont(mono)
         
         # Set default script template
         default_script = """#!/bin/bash
@@ -318,6 +330,8 @@ echo "Job complete"
         
         # Add buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.button(QDialogButtonBox.Ok).setText("Submit job")
+        button_box.button(QDialogButtonBox.Ok).setProperty("variant", "primary")
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -503,8 +517,9 @@ class JobDetailDialog(QDialog):
             basic_layout.addRow("Job ID:", QLabel(self.job.get('id', 'N/A')))
             basic_layout.addRow("Job Name:", QLabel(self.job.get('name', 'N/A')))
             basic_layout.addRow("State:", QLabel(self.job.get('state', 'N/A')))
-            basic_layout.addRow("Run Time:", QLabel(self.job.get('time', 'N/A')))
-            basic_layout.addRow("Time Limit:", QLabel(self.job.get('time_limit', 'N/A')))
+            basic_layout.addRow("Queue:", QLabel(self.job.get('partition', 'N/A')))
+            basic_layout.addRow("Elapsed:", QLabel(self.job.get('time', 'N/A')))
+            basic_layout.addRow("Time left:", QLabel(self.job.get('time_limit', 'N/A')))
             basic_layout.addRow("Nodes:", QLabel(self.job.get('nodes', 'N/A')))
             basic_layout.addRow("CPUs:", QLabel(self.job.get('cpus', 'N/A')))
             
@@ -603,83 +618,66 @@ class TaskManagerWidget(QWidget):
     
     def initUI(self):
         """Initialize UI components"""
-        main_layout = QVBoxLayout(self)
-        
-        # Top control bar
+        main_layout = page_layout(self)
+
+        self.header = PageHeader("Jobs", "Everything you have queued or running on HPC3.")
+        self.refresh_btn = button("Refresh", None, self.refresh_jobs)
+        self.header.add_action(self.refresh_btn)
+        submit_btn = button("Submit job", "primary", self.show_job_submission_dialog)
+        self.header.add_action(submit_btn)
+        main_layout.addWidget(self.header)
+
+        # Filter + selection actions
         control_layout = QHBoxLayout()
-        
-        # New job button
-        submit_btn = QPushButton("Submit New Job")
-        submit_btn.clicked.connect(self.show_job_submission_dialog)
-        control_layout.addWidget(submit_btn)
-        
-        # Auto-refresh checkbox
-        self.auto_refresh = QCheckBox("Auto Refresh")
+        control_layout.setSpacing(12)
+        self.status_filter = SegmentedControl([("All", None), ("Running", "RUNNING"),
+                                               ("Pending", "PENDING")])
+        self.status_filter.changed.connect(lambda _d: self.apply_filter())
+        control_layout.addWidget(self.status_filter)
+
+        self.auto_refresh = QCheckBox("Refresh every 2 minutes")
         self.auto_refresh.setChecked(True)
         self.auto_refresh.stateChanged.connect(self.toggle_auto_refresh)
         control_layout.addWidget(self.auto_refresh)
-        
-        # Status filter
-        self.status_filter = QComboBox()
-        self.status_filter.addItems(["All", "Running", "Pending", "Completed", "Cancelled", "Failed"])
-        self.status_filter.currentTextChanged.connect(self.apply_filter)
-        control_layout.addWidget(QLabel("Status Filter:"))
-        control_layout.addWidget(self.status_filter)
-        
+
         control_layout.addStretch()
-        
-        # Add control bar to main layout
+        self.status_label = label("", "muted")
+        control_layout.addWidget(self.status_label)
+        self.job_count_label = label("", "muted")
+        control_layout.addWidget(self.job_count_label)
+        self.details_btn = button("Details", None, self.show_job_details)
+        self.details_btn.setEnabled(False)
+        control_layout.addWidget(self.details_btn)
+        self.cancel_job_btn = button("Cancel job", "danger", self.cancel_selected_job)
+        self.cancel_job_btn.setEnabled(False)
+        control_layout.addWidget(self.cancel_job_btn)
         main_layout.addLayout(control_layout)
-        
+
         # Job table
-        self.jobs_table = QTableWidget()
-        self.jobs_table.setColumnCount(8)
-        self.jobs_table.setHorizontalHeaderLabels([
-            "Job ID", "Job Name", "State", "Run Time", "Time Limit", "Nodes", "CPUs", "Remarks"
-        ])
-        self.jobs_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.jobs_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.jobs_table.setAlternatingRowColors(True)
-        self.jobs_table.horizontalHeader().setStretchLastSection(True)
+        self.jobs_table = make_table(
+            ["Job ID", "Name", "State", "Queue", "Elapsed", "Time left", "Nodes", "CPUs",
+             "Node / waiting on"], sortable=False)
+        self.jobs_table.setItemDelegateForColumn(COL_STATE, PillDelegate(parent=self))
+        self.jobs_table.setItemDelegateForColumn(
+            COL_QUEUE, PillDelegate(tone_for=_tier_tone, parent=self))
         self.jobs_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.jobs_table.customContextMenuRequested.connect(self.show_context_menu)
         self.jobs_table.doubleClicked.connect(self.show_job_details)
-        
-        # Adjust column width
-        self.jobs_table.setColumnWidth(0, 80)   # ID
-        self.jobs_table.setColumnWidth(1, 180)  # Name
-        self.jobs_table.setColumnWidth(2, 80)   # State
-        self.jobs_table.setColumnWidth(3, 80)   # Run Time
-        self.jobs_table.setColumnWidth(4, 80)   # Time Limit
-        self.jobs_table.setColumnWidth(5, 60)   # Nodes
-        self.jobs_table.setColumnWidth(6, 60)   # CPUs
-        
-        # Add table to main layout
-        main_layout.addWidget(self.jobs_table)
-        
-        # Bottom status bar
-        status_layout = QHBoxLayout()
-        
-        self.status_label = QLabel("Ready")
-        status_layout.addWidget(self.status_label)
-
-        # Manual refresh button in the bottom status bar.
-        refresh_btn = QPushButton("Refresh Job List")
-        refresh_btn.clicked.connect(self.refresh_jobs)
-        status_layout.addWidget(refresh_btn)
-
-        status_layout.addStretch()
-
-        self.job_count_label = QLabel("Number of Jobs: 0")
-        status_layout.addWidget(self.job_count_label)
-
-        # Add status bar to main layout
-        main_layout.addLayout(status_layout)
+        self.jobs_table.itemSelectionChanged.connect(self._on_selection_changed)
+        for col, width in enumerate((96, 190, 108, 116, 84, 100, 60, 60)):
+            self.jobs_table.setColumnWidth(col, width)
+        main_layout.addWidget(self.jobs_table, 1)
 
         # Live status surface (spinner + state + collapsible log) for all SSH work.
+        main_layout.addWidget(divider())
         self.status_view = LiveStatusView(self)
         main_layout.addWidget(self.status_view)
-    
+
+    def _on_selection_changed(self):
+        selected = bool(self.jobs_table.selectionModel().selectedRows())
+        self.details_btn.setEnabled(selected)
+        self.cancel_job_btn.setEnabled(selected)
+
     @pyqtSlot()
     def refresh_jobs(self):
         """Refresh the job list on a worker thread (never blocks the UI)."""
@@ -689,8 +687,7 @@ class TaskManagerWidget(QWidget):
         if self._refresh_worker and self._refresh_worker.isRunning():
             return  # a refresh is already in flight; don't stack them
 
-        self.status_label.setStyleSheet("")
-        self.status_label.setText("Loading job list…")
+        self.status_label.setText("Loading…")
         self.status_view.start("Loading jobs", f"squeue for {self.username}")
         self._refresh_worker = (SSHWorker(
             lambda rep: self.slurm_manager.get_jobs(reporter=rep),
@@ -705,79 +702,43 @@ class TaskManagerWidget(QWidget):
     def _populate_jobs(self, jobs):
         """Fill the table from a job list (runs on the UI thread)."""
         jobs = jobs or []
-        # Clear table
-        self.jobs_table.setRowCount(0)
-
-        # Populate table
+        table = self.jobs_table
+        table.setRowCount(0)
         for i, job in enumerate(jobs):
-            self.jobs_table.insertRow(i)
-            
-            # Set cell
-            self.jobs_table.setItem(i, 0, QTableWidgetItem(job.get('id', 'N/A')))
-            self.jobs_table.setItem(i, 1, QTableWidgetItem(job.get('name', 'N/A')))
-            
-            # Set color based on state
-            state_item = QTableWidgetItem(job.get('state', 'N/A'))
-            state = job.get('state', '').lower()
-            if state == 'running':
-                state_item.setForeground(QColor('green'))
-            elif state == 'pending':
-                state_item.setForeground(QColor('blue'))
-            elif state in ['failed', 'timeout', 'cancelled']:
-                state_item.setForeground(QColor('red'))
-            elif state == 'completed':
-                state_item.setForeground(QColor('darkgreen'))
-            
-            self.jobs_table.setItem(i, 2, state_item)
-            self.jobs_table.setItem(i, 3, QTableWidgetItem(job.get('time', 'N/A')))
-            self.jobs_table.setItem(i, 4, QTableWidgetItem(job.get('time_limit', 'N/A')))
-            self.jobs_table.setItem(i, 5, QTableWidgetItem(job.get('nodes', 'N/A')))
-            self.jobs_table.setItem(i, 6, QTableWidgetItem(job.get('cpus', 'N/A')))
-            self.jobs_table.setItem(i, 7, QTableWidgetItem(job.get('reason', 'N/A')))
-        
-        # Update job count
-        self.job_count_label.setText(f"Number of Jobs: {len(jobs)}")
+            table.insertRow(i)
+            values = (job.get('id', ''), job.get('name', ''), job.get('state', ''),
+                      job.get('partition', ''), job.get('time', ''),
+                      job.get('time_limit', ''), job.get('nodes', ''),
+                      job.get('cpus', ''), job.get('reason', ''))
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if col in (1, COL_REASON):
+                    item.setToolTip(str(value))
+                table.setItem(i, col, item)
 
-        # Apply filter
+        running = sum(1 for j in jobs if j.get('state', '').upper() == 'RUNNING')
+        self.job_count_label.setText(
+            "No jobs" if not jobs else f"{running} running · {len(jobs) - running} waiting")
         self.apply_filter()
-
-        # Update status
-        self.status_label.setText(f"Job list updated ({time.strftime('%H:%M:%S')})")
+        self._on_selection_changed()
+        self.status_label.setText(f"Updated {time.strftime('%H:%M:%S')}  ·")
         self.status_view.finish_ok(f"{len(jobs)} job(s)")
-    
+
     def apply_filter(self):
-        """Apply status filter"""
-        filter_text = self.status_filter.currentText()
-        
-        # Map status text to job status
-        status_map = {
-            "All": None,
-            "Running": "RUNNING",
-            "Pending": "PENDING",
-            "Completed": "COMPLETED",
-            "Cancelled": "CANCELLED",
-            "Failed": "FAILED"
-        }
-        
-        filter_status = status_map.get(filter_text)
-        
-        # Apply filter
+        """Show only rows whose state matches the filter."""
+        wanted = self.status_filter.currentData()
         for i in range(self.jobs_table.rowCount()):
-            state_item = self.jobs_table.item(i, 2)
-            if state_item:
-                state = state_item.text()
-                if filter_status is None or state == filter_status:
-                    self.jobs_table.setRowHidden(i, False)
-                else:
-                    self.jobs_table.setRowHidden(i, True)
-    
+            state_item = self.jobs_table.item(i, COL_STATE)
+            state = state_item.text() if state_item else ""
+            self.jobs_table.setRowHidden(i, wanted is not None and state != wanted)
+
     def toggle_auto_refresh(self, state):
         """Toggle auto-refresh"""
         if state == Qt.Checked:
             self.refresh_timer.start(120000)
         else:
             self.refresh_timer.stop()
-    
+
     def show_job_submission_dialog(self):
         """Fetch partitions/accounts/GPUs in the background, then open the dialog."""
         if not self.slurm_manager:
@@ -854,12 +815,13 @@ class TaskManagerWidget(QWidget):
         job = {
             'id': self.jobs_table.item(row, 0).text(),
             'name': self.jobs_table.item(row, 1).text(),
-            'state': self.jobs_table.item(row, 2).text(),
-            'time': self.jobs_table.item(row, 3).text(),
-            'time_limit': self.jobs_table.item(row, 4).text(),
-            'nodes': self.jobs_table.item(row, 5).text(),
-            'cpus': self.jobs_table.item(row, 6).text(),
-            'reason': self.jobs_table.item(row, 7).text(),
+            'state': self.jobs_table.item(row, COL_STATE).text(),
+            'partition': self.jobs_table.item(row, COL_QUEUE).text(),
+            'time': self.jobs_table.item(row, 4).text(),
+            'time_limit': self.jobs_table.item(row, 5).text(),
+            'nodes': self.jobs_table.item(row, 6).text(),
+            'cpus': self.jobs_table.item(row, 7).text(),
+            'reason': self.jobs_table.item(row, COL_REASON).text(),
         }
 
         self.status_view.start("Loading job details", f"scontrol show job {job_id}")
@@ -948,16 +910,16 @@ class TaskManagerWidget(QWidget):
         QMessageBox, which during the 2-minute auto-refresh meant a modal box could
         appear out of nowhere every time the link blipped.
         """
-        self.status_label.setText("Error")
+        self.status_label.setText("")
         logging.error("%s %s", message, hint)
         self.status_view.finish_error(message, hint)
 
     @pyqtSlot(str)
     def on_job_submitted(self, job_id):
         """Slot function for successful job submission"""
-        self.status_label.setText(f"Job submitted: {job_id}")
+        self.status_label.setText(f"Submitted {job_id}  ·")
 
     @pyqtSlot(str)
     def on_job_canceled(self, job_id):
         """Slot function for successful job cancellation"""
-        self.status_label.setText(f"Job cancelled: {job_id}") 
+        self.status_label.setText(f"Cancelled {job_id}  ·")
