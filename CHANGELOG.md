@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.4.1...v0.5.0) (2026-11-10)
+
+
+### Features
+
+* modern UI, a paid/free view of every GPU, and free-tier queue advice ([#14](https://github.com/MolloiLab/hpc3-launcher/issues/14)) ([aa14534](https://github.com/MolloiLab/hpc3-launcher/commit/aa145348b3f036c616128863929b2bad843b60fb))
+
 ## [0.4.1](https://github.com/MolloiLab/hpc3-launcher/compare/v0.4.0...v0.4.1) (2026-11-01)
 
 
