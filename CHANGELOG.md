@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.5.0...v0.6.0) (2026-11-10)
+
+
+### Features
+
+* remember bad nodes, compare GPU start times, and fix the free-tier account pick ([#16](https://github.com/MolloiLab/hpc3-launcher/issues/16)) ([6ff02d9](https://github.com/MolloiLab/hpc3-launcher/commit/6ff02d9a410fecc127ef2cc9482e622f4d79454f))
+
+
+### Bug Fixes
+
+* match account names without regard to case so the best free account is chosen ([6ff02d9](https://github.com/MolloiLab/hpc3-launcher/commit/6ff02d9a410fecc127ef2cc9482e622f4d79454f))
+
 ## [0.5.0](https://github.com/MolloiLab/hpc3-launcher/compare/v0.4.1...v0.5.0) (2026-11-10)
 
 
