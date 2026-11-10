@@ -183,11 +183,12 @@ class PageHeader(QWidget):
         row.addWidget(self.title_label, 0, Qt.AlignVCenter)
         self.subtitle_label = label("", "muted")
         self.subtitle_label.hide()
-        row.addWidget(self.subtitle_label, 1, Qt.AlignVCenter)
+        row.addWidget(self.subtitle_label, 0, Qt.AlignVCenter)
+        row.addStretch(1)                  # actions keep their own size, at the right
         self.actions = QHBoxLayout()
-        self.actions.setSpacing(8)
+        self.actions.setSpacing(10)
         row.addLayout(self.actions)
-        self.setFixedHeight(34)
+        self.setFixedHeight(40)
 
     def add_action(self, widget):
         self.actions.addWidget(widget, 0, Qt.AlignVCenter)
@@ -282,6 +283,11 @@ class SegmentedControl(QFrame):
     def setCurrentData(self, data):
         if data in self._data:
             self._group.button(self._data.index(data)).setChecked(True)
+
+    def setEnabledWhere(self, allowed):
+        """Enable only the choices for which ``allowed(data)`` is true."""
+        for index, data in enumerate(self._data):
+            self._group.button(index).setEnabled(bool(allowed(data)))
 
     def setToolTips(self, tips):
         for index, tip in enumerate(tips):

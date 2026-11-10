@@ -60,7 +60,7 @@ LIGHT = {
     "sidebar": "#ECEEF2", "sidebar_text": "#5F656E", "sidebar_active": "#1B1C1F",
     "sidebar_hover": "#E2E5EA", "sidebar_selected": "#D2DDEA",
     # Who holds a GPU. Paid and free are deliberately far apart in hue.
-    "gpu_paid": "#7C6CF2", "gpu_free": "#38A9E8", "gpu_idle": "#10B981",
+    "gpu_paid": "#9AA1AB", "gpu_free": "#3F74DA", "gpu_idle": "#10B981",
     "track": "#E4E7EC",
 }
 
@@ -69,15 +69,15 @@ DARK = {
     "bg": "#0B0B0C", "surface": "#141416", "surface2": "#1E1E21",
     "border": "#222226", "border_strong": "#303036",
     "text": "#F2F2F3", "muted": "#A0A0A8", "faint": "#6C6C75",
-    "accent": "#6B8BFA", "accent_hover": "#84A0FB", "accent_soft": "#1C2740",
+    "accent": "#3E66E0", "accent_hover": "#4C74EE", "accent_soft": "#1A2233",
     "on_accent": "#FFFFFF",
     "ok": "#34D399", "ok_soft": "#0C2A20",
     "warn": "#FBBF24", "warn_soft": "#2E230A",
     "danger": "#F87171", "danger_soft": "#2D1414",
     "info": "#60A5FA", "info_soft": "#101F38",
     "sidebar": "#0B0B0C", "sidebar_text": "#A0A0A8", "sidebar_active": "#F2F2F3",
-    "sidebar_hover": "#17171A", "sidebar_selected": "#1C2740",
-    "gpu_paid": "#8E80F5", "gpu_free": "#38BDF8", "gpu_idle": "#34D399",
+    "sidebar_hover": "#17171A", "sidebar_selected": "#1A2233",
+    "gpu_paid": "#6E6E78", "gpu_free": "#5B8DEF", "gpu_idle": "#34D399",
     "track": "#232327",
 }
 
@@ -363,6 +363,7 @@ QToolTip {{ background: {c['text']}; color: {c['bg']}; border: none; padding: 5p
 /* --- text roles --- */
 QLabel {{ background: transparent; }}
 QLabel[role="title"] {{ font-size: 15px; font-weight: 600; }}
+QLabel[role="heading"] {{ font-size: 22px; font-weight: 600; }}
 QLabel[role="subtitle"] {{ color: {c['muted']}; }}
 QLabel[role="section"] {{ font-size: 12px; color: {c['muted']}; }}
 QLabel[role="muted"] {{ color: {c['muted']}; }}
@@ -428,7 +429,7 @@ QPushButton[variant="ghost"] {{ background: transparent; border-color: transpare
     padding: 4px 8px; }}
 QPushButton[variant="ghost"]:hover {{ background: {c['track']}; color: {c['text']}; }}
 QPushButton[variant="ghost"]:disabled {{ color: {c['faint']}; background: transparent; }}
-QPushButton[variant="link"] {{ background: transparent; border-color: transparent; color: {c['accent']};
+QPushButton[variant="link"] {{ background: transparent; border-color: transparent; color: {c['info']};
     padding: 2px 6px; }}
 QPushButton[variant="link"]:hover {{ background: {c['accent_soft']}; }}
 QPushButton[variant="tile"] {{ text-align: left; padding: 8px 12px; font-weight: 400;
@@ -440,6 +441,7 @@ QPushButton[segment="true"] {{ background: transparent; border: 1px solid transp
     border-radius: 6px; padding: 4px 12px; color: {c['muted']}; font-weight: 500; }}
 QPushButton[segment="true"]:hover {{ color: {c['text']}; background: transparent; }}
 QPushButton[segment="true"]:checked {{ background: {c['surface2']}; color: {c['text']}; }}
+QPushButton[segment="true"]:disabled {{ color: {c['faint']}; background: transparent; }}
 QFrame#segmented {{ background: {c['track']}; border-radius: 9px; }}
 QToolButton {{ background: transparent; border: none; color: {c['muted']}; padding: 4px 6px;
     border-radius: 6px; }}

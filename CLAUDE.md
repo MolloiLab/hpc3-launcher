@@ -166,12 +166,20 @@ Each widget corresponds to a page in the main application sidebar:
 
 - **login_dialog.py** - Initial login dialog for username/password/DUO
 - **vscode_widget.py** - launch and connect to VSCode sessions (sidebar: "Sessions",
-  the page the app opens on). The form is a cascade -- tier, account, GPU, GPU
-  count, memory, CPUs, run time, bad nodes to avoid. The "Free-tier outlook" card
-  at the top right holds the advice: the account with the best queue priority
-  (chosen by default), whether the request fits an idle GPU right now, a node
-  other users avoid, and Slurm's start estimate for every GPU model on demand.
-  Keep that card above the fold -- under the form, nobody saw it
+  the page the app opens on). **One thing per screen**: view 1 is the list of
+  your sessions, with a detail panel for the selected one; view 2 ("New
+  session") is one centred column -- the form, the free-tier advice as plain
+  lines under it, and Launch pinned at the bottom. Do not put the form and the
+  list back on one screen
+  - The form is a cascade -- tier, account, GPU, GPU count, memory, run time
+    (CPUs and bad nodes under "More options") -- and can only describe a job
+    HPC3 accepts
+  - The advice: the account with the best queue priority (chosen by default),
+    whether the request fits an idle GPU right now, and Slurm's start estimate
+    for every GPU model on demand
+  - A node that several other users' queued jobs exclude is **stayed off by
+    default** ("Allow it" overrides for this run). A warning alone was tried
+    and a real job still landed on the broken node
 - **task_manager_widget.py** - Slurm job management interface (sidebar: "Jobs")
 - **node_status_widget.py** - paid / free / idle GPUs per model and per node, the
   pending queue, and your fair share per account (sidebar: "GPUs & nodes")

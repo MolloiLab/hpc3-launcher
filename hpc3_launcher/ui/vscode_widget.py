@@ -27,8 +27,8 @@ from datetime import datetime
 
 from PyQt5.QtCore import Qt, pyqtSlot, QTimer, QSettings
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QSpinBox, QTextEdit,
-    QTabWidget, QScrollArea, QFrame, QTableWidgetItem, QApplication, QSizePolicy,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QSpinBox,
+    QScrollArea, QFrame, QTableWidgetItem, QApplication, QStackedWidget,
 )
 
 from modules.vscode_helper import VSCodeManager, build_sbatch_command, is_terminal_state
@@ -150,12 +150,16 @@ class VSCodeWidget(QWidget):
         self._compare_worker = None
         self._compare_key = None
         self._compare_rows = []
+        # Suspect nodes the user chose to allow anyway (this run of the app only).
+        self._allowed_suspects = set()
 
         # Initialization complete flag
         self.initialization_complete = False
 
         # Initialize UI
         self.init_ui()
+        # The list rows carry a muted text colour; redraw them on a theme switch.
+        theme.notifier.changed.connect(self._render_sessions_table)
 
         # Use timer to delay initialization of other managers to avoid blocking UI at startup
         QTimer.singleShot(500, self.delayed_init_managers)
@@ -463,15 +467,18 @@ class VSCodeWidget(QWidget):
         table.setRowCount(0)
         for row, (jid, info) in enumerate(sorted(self.sessions.items())):
             table.insertRow(row)
-            id_item = QTableWidgetItem(str(jid))
-            id_item.setData(Qt.UserRole, jid)
-            table.setItem(row, 0, id_item)
-            table.setItem(row, 1, QTableWidgetItem(info.get('status') or '—'))
-            partition = info.get('partition') or ''
-            table.setItem(row, 2, QTableWidgetItem(partition or '—'))
-            status_item = QTableWidgetItem(self._waiting_text(info))
-            status_item.setToolTip(status_item.text())
-            table.setItem(row, 3, status_item)
+            state = QTableWidgetItem(info.get('status') or '—')
+            state.setData(Qt.UserRole, jid)
+            table.setItem(row, 0, state)
+            where = QTableWidgetItem(self._waiting_text(info))
+            where.setToolTip(where.text())
+            table.setItem(row, 1, where)
+            queue = QTableWidgetItem(info.get('partition') or '')
+            queue.setForeground(theme.color("muted"))
+            table.setItem(row, 2, queue)
+            job = QTableWidgetItem(str(jid))
+            job.setForeground(theme.color("muted"))
+            table.setItem(row, 3, job)
             if jid == self.selected_job_id:
                 table.selectRow(row)
         table.blockSignals(False)
@@ -481,9 +488,10 @@ class VSCodeWidget(QWidget):
         n = len(self.sessions)
         running = sum(1 for s in self.sessions.values()
                       if (s.get('status') or '').upper() == 'RUNNING')
-        self.sessions_label.setText(
-            "No sessions yet — launch one on the left." if not n else
-            f"{running} running · {n - running} waiting")
+        self.sessions_label.setText("" if not n else f"{running} running · {n - running} waiting")
+        self.sessions_table.setVisible(bool(n))
+        self.empty_box.setVisible(not n)
+        self.detail_panel.setVisible(self.selected_job_id in self.sessions)
 
     def _on_session_selected(self):
         items = self.sessions_table.selectedItems()
@@ -491,12 +499,14 @@ class VSCodeWidget(QWidget):
             self.selected_job_id = None
             self.cancel_btn.setEnabled(False)
             self._update_flag_button()
+            self.detail_panel.hide()
             return
         jid = self.sessions_table.item(items[0].row(), 0).data(Qt.UserRole)
         self.selected_job_id = jid
         self.cancel_btn.setEnabled(True)
         self._update_flag_button()
         info = self.sessions.get(jid)
+        self.detail_panel.setVisible(bool(info))
         if not info:
             return
         self._render_job_info(info)
@@ -505,12 +515,12 @@ class VSCodeWidget(QWidget):
         elif (info.get('status') or '').upper() == 'RUNNING':
             self.host_label.setText("Fetching connection details…")
             self.copy_host_btn.setEnabled(False)
-            self.config_text.setPlainText("Fetching connection details…")
+            self.config_text.setText("Fetching connection details…")
             self._fetch_config_for(jid)
         else:
             self.host_label.setText("Not started yet — the host appears when a node is assigned.")
             self.copy_host_btn.setEnabled(False)
-            self.config_text.setPlainText("")
+            self.config_text.setText("")
 
     def _fetch_config_for(self, jid):
         """Parse one session's connection config on a worker thread, lazily, and
@@ -559,7 +569,7 @@ class VSCodeWidget(QWidget):
                          time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(info['submit_time'])))
         if info.get('config'):
             lines.append("SSH config:  written to ~/.ssh/config")
-        self.job_info_text.setPlainText("\n".join(lines))
+        self.job_info_text.setText("\n".join(lines))
 
     def _render_config(self, info):
         """Render one session's VSCode connection instructions."""
@@ -568,19 +578,17 @@ class VSCodeWidget(QWidget):
         self.host_label.setText(host)
         self.copy_host_btn.setEnabled(host != '?')
         text = (
-            "In VSCode press F1, run \"Remote-SSH: Connect to Host…\" and pick the host "
-            "above. It is already in your ~/.ssh/config.\n\n"
-            f"User {config.get('user', self.username)} · port {config.get('port', '?')} · "
-            f"job {info.get('job_id', 'N/A')}\n\n"
-            "When you're done, select the session and press Cancel session."
+            "In VSCode press F1, run \"Remote-SSH: Connect to Host…\" and pick this host. "
+            "It is already in your ~/.ssh/config."
         )
-        self.config_text.setPlainText(text)
+        self.config_text.setText(text)
 
     def _copy_host(self):
         host = self.host_label.text().strip()
         if host:
             QApplication.clipboard().setText(host)
-            self.status_label.setText(f"Copied {host}")
+            self.copy_host_btn.setText("Copied")
+            QTimer.singleShot(1500, lambda: self.copy_host_btn.setText("Copy host"))
 
     # --- UI --------------------------------------------------------------------
 
@@ -634,41 +642,163 @@ class VSCodeWidget(QWidget):
         self.more_btn.setText(text)
 
     def init_ui(self):
-        """Initialize UI components"""
+        """One thing per screen: the list of your sessions, or the launch form."""
         outer = page_layout(self)
+        self.views = QStackedWidget()
+        self.views.addWidget(self._build_list_view())
+        self.views.addWidget(self._build_launch_view())
+        outer.addWidget(self.views, 1)
+        # Live status stays pinned at the bottom of both views.
+        self.status_view = LiveStatusView(self)
+        outer.addWidget(self.status_view)
+
+    def show_launch(self):
+        self.views.setCurrentIndex(1)
+
+    def show_list(self):
+        self.views.setCurrentIndex(0)
+
+    # ---- view 1: your sessions -----------------------------------------------------
+
+    def _build_list_view(self):
+        view = QWidget()
+        col = QVBoxLayout(view)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(14)
 
         self.header = PageHeader(
-            "VSCode sessions",
-            "Launch a compute session on HPC3 and connect to it from VSCode.")
-        outer.addWidget(self.header)
+            "Sessions", "Compute sessions on HPC3 that you can open in VSCode.")
+        self.sessions_label = label("", "muted")
+        self.header.add_action(self.sessions_label)
+        self.new_btn = button("New session", "primary", self.show_launch)
+        self.header.add_action(self.new_btn)
+        col.addWidget(self.header)
 
-        columns = QHBoxLayout()
-        columns.setSpacing(16)
+        body = QHBoxLayout()
+        body.setSpacing(20)
 
-        # ---- left: the request form, in dependency order ----------------------
-        # Each choice constrains the ones below it (tier -> account -> GPU ->
-        # #GPUs -> memory -> #CPUs -> run time). The cascade (_apply_cascade)
-        # keeps only valid HPC3 combinations selectable.
-        form_scroll = QScrollArea()
-        form_scroll.setWidgetResizable(True)
-        form_scroll.setFrameShape(QFrame.NoFrame)
-        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        form_scroll.setMinimumWidth(400)
-        form_scroll.setMaximumWidth(440)
-        form_host = QWidget()
-        form_host_layout = QVBoxLayout(form_host)
-        form_host_layout.setContentsMargins(0, 0, 6, 0)
+        # The list: one roomy row per session, straight on the canvas.
+        left = QVBoxLayout()
+        left.setSpacing(0)
+        self.sessions_table = make_table(["State", "Where", "Queue", "Job"],
+                                         stretch=1, sortable=False)
+        self.sessions_table.horizontalHeader().hide()
+        self.sessions_table.verticalHeader().setDefaultSectionSize(52)
+        self.sessions_table.setItemDelegateForColumn(0, PillDelegate(parent=self))
+        self.sessions_table.setColumnWidth(0, 120)
+        self.sessions_table.setColumnWidth(2, 120)
+        self.sessions_table.setColumnWidth(3, 110)
+        self.sessions_table.setProperty("clickableRows", True)
+        self.sessions_table.itemSelectionChanged.connect(self._on_session_selected)
+        left.addWidget(self.sessions_table, 1)
 
-        form = Card("New session")
+        self.empty_box = QWidget()
+        empty = QVBoxLayout(self.empty_box)
+        empty.setContentsMargins(0, 0, 0, 0)
+        empty.setSpacing(8)
+        empty.addStretch(2)
+        empty.addWidget(label("No sessions yet", "title"), 0, Qt.AlignHCenter)
+        empty.addWidget(label("Launch one to get a node you can open in VSCode.", "muted"),
+                        0, Qt.AlignHCenter)
+        empty.addSpacing(8)
+        empty.addWidget(button("New session", "primary", self.show_launch), 0, Qt.AlignHCenter)
+        empty.addStretch(3)
+        left.addWidget(self.empty_box, 1)
+        body.addLayout(left, 1)
+
+        # The selected session: how to connect, and what can be done with it.
+        self.detail_panel = Card()
+        self.detail_panel.setFixedWidth(380)
+        detail = self.detail_panel.body
+        detail.setSpacing(10)
+        detail.addWidget(label("Connect from VSCode", "section"))
+        self.host_label = label("", "mono", wrap=True)
+        self.host_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        detail.addWidget(self.host_label)
+        self.copy_host_btn = button("Copy host", None, self._copy_host)
+        self.copy_host_btn.setEnabled(False)
+        detail.addWidget(self.copy_host_btn, 0, Qt.AlignLeft)
+        self.config_text = label("", "muted", wrap=True)
+        detail.addWidget(self.config_text)
+        detail.addSpacing(4)
+        detail.addWidget(divider())
+        detail.addSpacing(4)
+        detail.addWidget(label("Details", "section"))
+        self.job_info_text = label("", "mono")
+        self.job_info_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.job_info_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        detail.addWidget(self.job_info_text)
+        detail.addStretch(1)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        # Flag the session's node as bad: later launches stay off it.
+        self.flag_btn = button("Flag node as bad", None, self._toggle_flag_selected)
+        self.flag_btn.setEnabled(False)
+        actions.addWidget(self.flag_btn)
+        actions.addStretch(1)
+        self.cancel_btn = button("Cancel session", "danger", self.cancel_selected_session)
+        self.cancel_btn.setEnabled(False)
+        actions.addWidget(self.cancel_btn)
+        detail.addLayout(actions)
+        self.detail_panel.hide()
+        body.addWidget(self.detail_panel, 0)
+
+        col.addLayout(body, 1)
+        return view
+
+    # ---- view 2: a new session -----------------------------------------------------
+
+    def _build_launch_view(self):
+        view = QWidget()
+        col = QVBoxLayout(view)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(10)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        self.back_btn = button("‹  Sessions", "ghost", self.show_list)
+        bar.addWidget(self.back_btn)
+        bar.addStretch(1)
+        col.addLayout(bar)
+
+        # One centred column, never wider than a comfortable form.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # No scroll bar (the wheel still scrolls): a bar would shift the column
+        # a few pixels out of line with the pinned Launch button below it.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        host = QWidget()
+        centre = QHBoxLayout(host)
+        centre.setContentsMargins(0, 0, 0, 0)
+        column = QWidget()
+        column.setMaximumWidth(600)
+        column.setMinimumWidth(460)
+        stack = QVBoxLayout(column)
+        stack.setContentsMargins(0, 0, 8, 12)
+        stack.setSpacing(16)
+        centre.addStretch(1)
+        centre.addWidget(column, 4)
+        centre.addStretch(1)
+        scroll.setWidget(host)
+        col.addWidget(scroll, 1)
+
+        stack.addWidget(label("New session", "heading"))
+
+        # The request, in dependency order: each choice narrows the ones below it
+        # (tier -> account -> GPU -> #GPUs -> memory -> #CPUs -> run time), so the
+        # form can only describe a job HPC3 will accept (see _apply_cascade).
+        form = Card()
         grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(10)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         row = 0
 
-        # 1. Tier -- first, because it decides which accounts and GPUs are legal:
-        #    free partitions take any account; paid ones check the account suffix.
+        # 1. Tier -- decides which accounts and GPUs are legal: free partitions
+        #    take any account; paid ones check the account suffix.
         self.free_option_check = SegmentedControl([("Free", True), ("Paid", False)])
         self.free_option_check.setToolTips([
             "Costs no SUs. Waits in the free queue, and can be cancelled if a paid job "
@@ -678,8 +808,8 @@ class VSCodeWidget(QWidget):
         self._field(grid, row, "Tier", self.free_option_check, 0, 2)
         row += 1
 
-        # 2. Account -- on the paid tier its suffix sets the partition family; on
-        #    the free tier it sets your queue priority.
+        # 2. Account -- paid: its suffix sets the partition family; free: it sets
+        #    your queue priority.
         self.account_combo = QComboBox()
         self.account_combo.addItem("Loading…", None)
         self.account_combo.currentIndexChanged.connect(self.on_account_changed)
@@ -695,14 +825,19 @@ class VSCodeWidget(QWidget):
         self._field(grid, row, "GPU", self.gpu_combo, 0, 2)
         row += 1
 
-        # 4. Number of GPUs -- max clamped to the chosen GPU's per-node limit.
-        self.gpu_count_spinbox = QSpinBox()
+        # 4. Number of GPUs. The spin box holds the value and its per-node limit
+        #    (the cascade and the tests drive it); what is shown is a row of
+        #    buttons, because a stepper for "1 to 4" is fiddlier than four buttons.
+        self.gpu_count_spinbox = QSpinBox(self)
+        self.gpu_count_spinbox.hide()
         self.gpu_count_spinbox.setMinimum(1)
         self.gpu_count_spinbox.setMaximum(8)
         self.gpu_count_spinbox.setValue(1)
         self.gpu_count_spinbox.setEnabled(False)  # until a GPU is selected
         self.gpu_count_spinbox.valueChanged.connect(self.on_gpu_count_changed)
-        self._field(grid, row, "GPUs", self.gpu_count_spinbox, 0)
+        self.gpu_count_seg = SegmentedControl([(str(n), n) for n in (1, 2, 3, 4)])
+        self.gpu_count_seg.changed.connect(self.gpu_count_spinbox.setValue)
+        self._field(grid, row, "GPUs", self.gpu_count_seg, 0)
 
         # 5. Memory -- HPC3 caps RAM per core, so more memory means more cores.
         self.memory_combo = QComboBox()
@@ -713,13 +848,12 @@ class VSCodeWidget(QWidget):
         self._field(grid, row, "Memory", self.memory_combo, 1)
         row += 1
 
-        # 6. CPUs -- min from memory (GB-per-core cap), max from the node type.
+        # 6. CPUs -- derived from memory; lives under "More options".
         self.cpu_spinbox = QSpinBox()
         self.cpu_spinbox.setMinimum(1)
         self.cpu_spinbox.setMaximum(128)
         self.cpu_spinbox.setValue(2)
         self.cpu_spinbox.valueChanged.connect(self.on_cpu_changed)
-        # (placed under "More options" below: it is derived, rarely touched)
 
         # 7. Run time -- capped at 3 days on free queues, 14 days on paid.
         self.time_combo = QComboBox()
@@ -730,161 +864,90 @@ class VSCodeWidget(QWidget):
         self._field(grid, row, "Run time", self.time_combo, 0, 2)
 
         # 8. Bad nodes -- tick any node Slurm should keep your jobs off (sbatch
-        #    --exclude), e.g. one whose GPU is broken. A tick is a flag: it is
-        #    remembered until you untick it. Flagged nodes are listed first, then
-        #    your own sessions' nodes, so "not that node again" is two clicks.
+        #    --exclude). A tick is a flag: remembered until you untick it.
         self.exclude_combo = CheckableComboBox(empty_text="None flagged — any node")
         self.exclude_combo.setToolTip(
             "Tick a node to keep every launch off it. Remembered until you untick it.")
         self.exclude_combo.checked_changed.connect(self.on_exclude_changed)
         form.body.addLayout(grid)
 
-        # The two fields that are rarely touched stay folded away, so the form
-        # reads as five choices rather than eight.
+        # The two fields that are rarely touched stay folded away.
         self.more_btn = button("More options", "ghost", self._toggle_more)
         self.more_btn.setCheckable(True)
         form.body.addWidget(self.more_btn, 0, Qt.AlignLeft)
         self.more_box = QWidget()
         more = QGridLayout(self.more_box)
         more.setContentsMargins(0, 0, 0, 0)
-        more.setHorizontalSpacing(12)
-        more.setVerticalSpacing(10)
+        more.setHorizontalSpacing(14)
+        more.setVerticalSpacing(14)
         more.setColumnStretch(0, 1)
         more.setColumnStretch(1, 1)
         self._field(more, 0, "CPUs (set by memory)", self.cpu_spinbox, 0)
         self._field(more, 1, "Bad nodes to avoid", self.exclude_combo, 0, 2)
         self.more_box.hide()
         form.body.addWidget(self.more_box)
+        stack.addWidget(form)
 
-        # Launch button -- each click starts a NEW session (multiple may run).
-        self.submit_btn = button("Launch session", "primary", self.submit_job)
-        self.submit_btn.setEnabled(False)  # until an account is selected
-        form.body.addWidget(self.submit_btn)
-
-        # What will actually be requested, in one quiet line under the button.
-        self.status_label = label("Loading…", "summary", wrap=True)
-        form.body.addWidget(self.status_label)
-
-        form_host_layout.addWidget(form)
-        form_host_layout.addStretch(1)
-        form_scroll.setWidget(form_host)
-        columns.addWidget(form_scroll, 0)
-
-        # ---- right: free-tier outlook, sessions, connection details -------------
-        right = QVBoxLayout()
-        right.setSpacing(16)
-
-        # What decides how soon a free job starts: priority, fit, bad nodes, and
-        # Slurm's own estimates. First thing on the right so it is never scrolled
-        # out of sight (it used to sit under the form, below the fold).
-        panel = Card()                       # the one floating surface on the right
-        panel.body.setSpacing(14)
-        self.advice_card = Card("Free-tier outlook", kind="flat")
+        # What decides how soon a free job starts, as plain lines under the form:
+        # a status light, a sentence, and at most one quiet action each.
+        self.advice_card = Card(kind="flat")
         advice = self.advice_card.body
-        advice.setSpacing(6)
-        # Slurm's start estimate for this same size on every GPU model.
-        self.compare_btn = button("Check start times", None, self.compare_starts)
-        self.compare_btn.setToolTip(
-            "Asks Slurm when this size of job would start on each GPU model. "
-            "Nothing is submitted.")
-        self.advice_card.add_action(self.compare_btn)
-
-        # Each line: a status light, plain words, and at most one quiet action.
+        advice.setSpacing(8)
         self.priority_dot, self.priority_label, self.use_best_btn = self._advice_line(
             advice, "Use it", self._use_best_account)
         self.fit_dot, self.fit_label, self.shrink_btn = self._advice_line(
             advice, "Shrink to fit", self._shrink_to_fit)
         self.suspect_dot, self.suspect_label, self.avoid_suspect_btn = self._advice_line(
-            advice, "Avoid it", self._avoid_suspects)
+            advice, "Allow it", self._avoid_suspects)
         self._suspects = []
         self.time_dot, self.time_hint_label, _unused = self._advice_line(advice)
-
+        # Slurm's start estimate for this same size on every GPU model.
+        self.compare_btn = button("Check start times", None, self.compare_starts)
+        self.compare_btn.setToolTip(
+            "Asks Slurm when this size of job would start on each GPU model. "
+            "Nothing is submitted.")
+        advice.addWidget(self.compare_btn, 0, Qt.AlignLeft)
         # One small tile per GPU model, soonest first (filled by compare_starts).
         self.compare_box = QWidget()
         self.compare_row = QHBoxLayout(self.compare_box)
-        self.compare_row.setContentsMargins(0, 4, 0, 0)
+        self.compare_row.setContentsMargins(0, 0, 0, 0)
         self.compare_row.setSpacing(8)
         self.compare_box.hide()
         advice.addWidget(self.compare_box)
-        advice.addSpacing(4)
-        advice.addWidget(divider())          # hidden with the group on the paid tier
-        panel.body.addWidget(self.advice_card, 0)
+        stack.addWidget(self.advice_card)
 
-        sessions_card = Card("Your sessions", kind="flat")
-        self.sessions_label = label("No sessions yet — launch one on the left.", "muted")
-        sessions_card.header.insertWidget(1, self.sessions_label, 0, Qt.AlignVCenter)
-        # Cancel the session selected in the table below.
-        self.cancel_btn = button("Cancel session", "danger", self.cancel_selected_session)
-        self.cancel_btn.setEnabled(False)  # Enabled when a session is selected
-        # Flag the selected session's node as bad: later launches stay off it.
-        self.flag_btn = button("Flag node as bad", "ghost", self._toggle_flag_selected)
-        self.flag_btn.setEnabled(False)
-        sessions_card.add_action(self.flag_btn)
-        sessions_card.add_action(self.cancel_btn)
+        stack.addStretch(1)
 
-        self.sessions_table = make_table(["Job", "State", "Queue", "Status"],
-                                         sortable=False)
-        self.sessions_table.horizontalHeader().hide()   # four self-evident columns
-        self.sessions_table.setItemDelegateForColumn(1, PillDelegate(parent=self))
-        self.sessions_table.setItemDelegateForColumn(
-            2, PillDelegate(tone_for=_tier_tone, parent=self))
-        self.sessions_table.setColumnWidth(0, 104)
-        self.sessions_table.setColumnWidth(1, 104)
-        self.sessions_table.setColumnWidth(2, 108)
-        # "Ignored": inside the scrolling column Qt sizes by preferred height, and a
-        # table's built-in preference (192 px) would push the Connect card off screen.
-        self.sessions_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
-        self.sessions_table.setMinimumHeight(110)
-        self.sessions_table.setProperty("clickableRows", True)
-        self.sessions_table.itemSelectionChanged.connect(self._on_session_selected)
-        sessions_card.body.addWidget(self.sessions_table)
-        panel.body.addWidget(sessions_card, 3)
+        # Launch stays pinned under the scrolling column, in line with it, so it
+        # can never be scrolled out of reach. Each click starts a NEW session
+        # (several may run at once).
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        pinned = QWidget()
+        pinned.setMaximumWidth(600)
+        pinned.setMinimumWidth(460)
+        pin = QVBoxLayout(pinned)
+        pin.setContentsMargins(0, 0, 8, 0)
+        pin.setSpacing(6)
+        self.submit_btn = button("Launch session", "primary", self.submit_job)
+        self.submit_btn.setEnabled(False)  # until an account is selected
+        pin.addWidget(self.submit_btn)
+        # What will actually be requested, in one quiet line under the button.
+        self.status_label = label("Loading…", "summary", wrap=True)
+        self.status_label.setAlignment(Qt.AlignHCenter)
+        pin.addWidget(self.status_label)
+        foot.addStretch(1)
+        foot.addWidget(pinned, 4)
+        foot.addStretch(1)
+        col.addLayout(foot)
+        return view
 
-        details = Card("Connect", kind="flat")
-        host_row = QHBoxLayout()
-        host_row.setSpacing(8)
-        self.host_label = label("", "mono")
-        self.host_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        host_row.addWidget(self.host_label, 1)
-        self.copy_host_btn = button("Copy host", "ghost", self._copy_host)
-        self.copy_host_btn.setEnabled(False)
-        host_row.addWidget(self.copy_host_btn)
-        details.header.addLayout(host_row, 2)
-
-        result_widget = QTabWidget()
-        self.config_text = QTextEdit()
-        self.config_text.setReadOnly(True)
-        self.config_text.setProperty("flat", True)
-        self.config_text.setPlaceholderText(
-            "Select a running session to see how to connect to it from VSCode.")
-        self.job_info_text = QTextEdit()
-        self.job_info_text.setReadOnly(True)
-        self.job_info_text.setPlaceholderText("Select a session to see its details.")
-        self.job_info_text.setProperty("flat", True)
-        self.job_info_text.setFont(theme.mono_font(12))
-        result_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
-        result_widget.setMinimumHeight(132)
-        result_widget.addTab(self.config_text, "How to connect")
-        result_widget.addTab(self.job_info_text, "Job details")
-        details.body.addWidget(result_widget)
-        panel.body.addWidget(details, 4)
-        right.addWidget(panel, 1)
-
-        right_host = QWidget()
-        right.setContentsMargins(0, 0, 6, 0)
-        right_host.setLayout(right)
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setFrameShape(QFrame.NoFrame)
-        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        right_scroll.setWidget(right_host)
-        columns.addWidget(right_scroll, 1)
-        outer.addLayout(columns, 1)
-
-        # Live status surface stays pinned at the bottom so the spinner/log is
-        # always visible.
-        self.status_view = LiveStatusView(self)
-        outer.addWidget(self.status_view)
+    def _sync_gpu_buttons(self):
+        """Make the 1-2-3-4 buttons mirror the (hidden) GPU-count spin box."""
+        spin = self.gpu_count_spinbox
+        self.gpu_count_seg.setEnabledWhere(
+            lambda n: spin.isEnabled() and n <= spin.maximum())
+        self.gpu_count_seg.setCurrentData(spin.value())
 
     # --- cascade ---------------------------------------------------------------
 
@@ -947,15 +1010,31 @@ class VSCodeWidget(QWidget):
 
     # --- bad nodes --------------------------------------------------------------
 
+    def _auto_avoided(self):
+        """Nodes kept off by default because several other users avoid them.
+
+        A warning was not enough: with the warning on screen, a job still went
+        straight to the broken node, because that node's GPUs were the only idle
+        ones (nobody else will take them). So the default is to stay off, and
+        allowing such a node is the deliberate act.
+        """
+        snapshot = self.snapshot or {}
+        nodes = snapshot.get('nodes') or {}
+        return [n for n in cv.suspect_nodes(snapshot.get('avoided', {}))
+                if n in nodes and n not in self._allowed_suspects
+                and not self.flags.is_flagged(n)]
+
     def _avoided(self):
-        """The nodes a launch is kept off: the flagged ones the cluster still has.
+        """The nodes a launch is kept off: the ones you flagged (that the cluster
+        still has) plus the ones kept off by default.
 
         A flag can outlive its node, and ``sbatch --exclude`` rejects a name it
         does not know -- which would fail every launch with a baffling error.
         """
         names = self.flags.names()
         nodes = (self.snapshot or {}).get('nodes')
-        return [n for n in names if n in nodes] if nodes else names
+        flagged = [n for n in names if n in nodes] if nodes else names
+        return sorted(set(flagged) | set(self._auto_avoided()))
 
     def _on_flags_changed(self):
         self._update_flag_button()
@@ -995,10 +1074,10 @@ class VSCodeWidget(QWidget):
             self.flags.flag(node, note)
 
     def _avoid_suspects(self):
+        """The line's action: allow the suspect node after all (until the app closes)."""
         if self._suspects:
-            node = self._suspects[0]
-            count = (self.snapshot or {}).get('avoided', {}).get(node, 0)
-            self.flags.flag(node, f"{count} other users' queued jobs avoid it")
+            self._allowed_suspects.add(self._suspects[0])
+            self._on_flags_changed()
 
     def _request(self):
         """The current form as a dict, or None while no account is chosen."""
@@ -1152,6 +1231,7 @@ class VSCodeWidget(QWidget):
 
             self.submit_btn.setEnabled(valid and self.vscode_manager is not None)
             self._rebuild_exclude_options()  # the target partition may have changed
+            self._sync_gpu_buttons()
             self._update_status_line()
             self._update_advice()
         finally:
@@ -1248,7 +1328,8 @@ class VSCodeWidget(QWidget):
         what = req['gpu_type'] or "GPU"
         plural = "s" if req['gpu_count'] != 1 else ""
         skipped = report['avoided_idle']
-        aside = (f" ({skipped} more idle on a node you flagged.)" if skipped else "")
+        aside = (f" ({skipped} more idle on a node this launch stays off.)"
+                 if skipped else "")
         if report['fits']:
             first = report['fits'][0]
             more = len(report['fits']) - 1
@@ -1282,11 +1363,9 @@ class VSCodeWidget(QWidget):
         """Point out a node in this request's pool that other users steer clear of."""
         self._suspects = []
         if req['gpu_type'] is not None:
-            avoided = self.snapshot.get('avoided', {})
             pool = {n['name'] for n in cv.nodes_for(self.snapshot['nodes'], req['family'],
                                                     req['gpu_type'] or None)}
-            self._suspects = [n for n in cv.suspect_nodes(avoided)
-                              if n in pool and not self.flags.is_flagged(n)]
+            self._suspects = [n for n in self._auto_avoided() if n in pool]
         if not self._suspects:
             self._set_line(self.suspect_dot, self.suspect_label, "")
             self.avoid_suspect_btn.hide()
@@ -1297,9 +1376,9 @@ class VSCodeWidget(QWidget):
         more = len(self._suspects) - 1
         self._set_line(
             self.suspect_dot, self.suspect_label,
-            f"<b>{first} may be faulty</b> — {self.snapshot['avoided'][first]} other "
-            f"users' queued jobs avoid it." + (f" ({more} more like it.)" if more else ""),
-            "warn")
+            f"<b>Staying off {first}</b> — {self.snapshot['avoided'][first]} other "
+            f"users' queued jobs avoid it, so it is probably faulty."
+            + (f" ({more} more like it.)" if more else ""), "warn")
         self.avoid_suspect_btn.show()
 
     # --- which GPU starts soonest ----------------------------------------------
@@ -1536,6 +1615,7 @@ class VSCodeWidget(QWidget):
         worker.start()
 
     def _submit_done(self, _ok):
+        self.show_list()        # back to the list, where the new session appears
         self.status_view.finish_ok(
             "submitted — it appears on the right and turns Ready when the node starts")
         # Pick up its partition / priority / wait reason without waiting a minute.
