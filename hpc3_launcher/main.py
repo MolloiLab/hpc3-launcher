@@ -22,6 +22,7 @@ from ui.vscode_widget import VSCodeWidget
 from core.ssh_session import HPCSession, HPC_SERVER
 from modules.auth import get_all_existing_users
 from modules.cluster_view import ClusterInsights
+from modules.node_flags import NodeFlagStore
 from modules.updater import GITHUB_REPO, get_current_version
 
 logging.basicConfig(level=logging.INFO,
@@ -62,6 +63,8 @@ class MainWindow(QMainWindow):
         self.username = username
         self.node_info = node_info
         self.insights = self._make_insights()
+        # Nodes the user has flagged as bad: one list, shared by the pages.
+        self.flags = NodeFlagStore(parent=self)
         self._init_ui()
 
     def _make_insights(self):
@@ -88,9 +91,11 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._build_sidebar())
 
         self.pages = QStackedWidget()
-        self.vscode_page = VSCodeWidget(username=self.username, insights=self.insights)
+        self.vscode_page = VSCodeWidget(username=self.username, insights=self.insights,
+                                        flags=self.flags)
         self.jobs_page = TaskManagerWidget(username=self.username)
-        self.nodes_page = NodeStatusWidget(username=self.username, insights=self.insights)
+        self.nodes_page = NodeStatusWidget(username=self.username, insights=self.insights,
+                                           flags=self.flags)
         self.balance_page = BalanceWidget(username=self.username)
         for page in (self.vscode_page, self.jobs_page, self.nodes_page, self.balance_page):
             self.pages.addWidget(page)

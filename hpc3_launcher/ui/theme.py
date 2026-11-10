@@ -226,6 +226,10 @@ QPushButton[variant="ghost"] {{ background: transparent; border-color: transpare
     padding: 4px 8px; }}
 QPushButton[variant="ghost"]:hover {{ background: {c['accent_soft']}; }}
 QPushButton[variant="ghost"]:disabled {{ color: {c['faint']}; background: transparent; }}
+QPushButton[variant="tile"] {{ text-align: left; padding: 7px 10px; font-weight: 500; }}
+QPushButton[variant="tile"]:checked {{ border-color: {c['accent']}; background: {c['accent_soft']};
+    color: {c['text']}; }}
+QPushButton[variant="tile"]:disabled {{ color: {c['faint']}; }}
 QPushButton[segment="true"] {{ background: transparent; border: none; border-radius: 6px;
     padding: 6px 14px; color: {c['muted']}; }}
 QPushButton[segment="true"]:hover {{ color: {c['text']}; }}

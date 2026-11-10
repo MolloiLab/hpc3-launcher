@@ -7,25 +7,29 @@ question about a GPU is not "is it used?" but "by a paid job, a free job, or
 nobody?" -- and, for the idle ones, "could a job actually start there?" (often
 not: the node's cores are already taken). This page answers both, per GPU model
 and per node, from ``modules/cluster_view``.
+
+It is also where a bad node is flagged: the "Avoid" column shows the nodes you
+have flagged and the ones other users' queued jobs steer clear of.
 """
 
 import logging
 import time
 
-from PyQt5.QtCore import QTimer, pyqtSlot
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QCheckBox, QTableWidgetItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QCheckBox, QTableWidgetItem, QMenu,
 )
 
 from modules import cluster_view as cv
 from modules import hpc3_constraints as hc
+from modules.node_flags import NodeFlagStore
 from core.ssh_session import SSHWorker
 from ui import theme
 from ui.status_view import LiveStatusView
 from ui.components import (
     PageHeader, StatTile, SegmentBar, SegmentedControl, Legend, SortItem,
-    PillDelegate, BarDelegate, DATA_ROLE, button, label, divider, make_table,
-    page_layout,
+    PillDelegate, BarDelegate, DATA_ROLE, ask_flag_note, button, label, divider,
+    make_table, page_layout,
 )
 
 logger = logging.getLogger('NodeStatusWidget')
@@ -53,11 +57,13 @@ def _gb(mb):
 class NodeStatusWidget(QWidget):
     """GPU availability by tier, plus the plain node list."""
 
-    def __init__(self, parent=None, username=None, insights=None):
+    def __init__(self, parent=None, username=None, insights=None, flags=None):
         super().__init__(parent)
         self.username = username
         self.insights = insights
         self.snapshot = None
+        self.flags = flags if flags is not None else NodeFlagStore(parent=self)
+        self.flags.changed.connect(self._on_flags_changed)
         self._worker = None
         self._last_refresh = 0.0
 
@@ -122,23 +128,30 @@ class NodeStatusWidget(QWidget):
                                                ("V100 / A30 / A100", "gpu")])
         self.family_filter.changed.connect(lambda _d: self._render_gpu_nodes())
         filters.addWidget(self.family_filter)
-        self.idle_only = QCheckBox("Only nodes with an idle GPU")
+        self.idle_only = QCheckBox("Idle GPUs only")
         self.idle_only.stateChanged.connect(lambda _s: self._render_gpu_nodes())
         filters.addWidget(self.idle_only)
         filters.addStretch(1)
         self.gpu_summary = label("", "muted")
         filters.addWidget(self.gpu_summary)
+        self.flag_btn = button("Flag node as bad", None, self._toggle_flag_selected)
+        self.flag_btn.setEnabled(False)
+        self.flag_btn.setToolTip("Select a node, then flag it to keep your launches off it.")
+        filters.addWidget(self.flag_btn)
         gpu_layout.addLayout(filters)
 
         self.gpu_nodes_table = make_table(
             ["Node", "GPU", "GPUs", "Idle cores", "Free memory",
-             "Fits a free job now", "State"], stretch=5)
+             "Fits a free job now", "State", "Avoid"], stretch=5)
         self.gpu_nodes_table.setItemDelegateForColumn(2, BarDelegate(self))
         self.gpu_nodes_table.setItemDelegateForColumn(
             6, PillDelegate(tone_for=_node_state_tone, parent=self))
-        for col, width in enumerate((150, 84, 290, 92, 104, 0, 96)):
+        for col, width in enumerate((140, 76, 240, 84, 100, 0, 80, 130)):
             if width:
                 self.gpu_nodes_table.setColumnWidth(col, width)
+        self.gpu_nodes_table.itemSelectionChanged.connect(self._update_flag_button)
+        self.gpu_nodes_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.gpu_nodes_table.customContextMenuRequested.connect(self._node_menu)
         gpu_layout.addWidget(self.gpu_nodes_table)
         self.tabs.addTab(gpu_tab, "GPU nodes")
 
@@ -258,6 +271,70 @@ class NodeStatusWidget(QWidget):
         self.refresh_btn.setEnabled(self.insights is not None)
         self.status_view.finish_error(str(error_msg), hint)
 
+    # --- bad nodes -------------------------------------------------------------
+
+    def _selected_node(self):
+        items = self.gpu_nodes_table.selectedItems()
+        if not items:
+            return None
+        cell = self.gpu_nodes_table.item(items[0].row(), 0)
+        return cell.text() if cell is not None else None
+
+    def _update_flag_button(self):
+        node = self._selected_node()
+        self.flag_btn.setEnabled(node is not None)
+        self.flag_btn.setText("Remove flag" if node and self.flags.is_flagged(node)
+                              else "Flag node as bad")
+
+    def _toggle_flag_selected(self):
+        node = self._selected_node()
+        if node is None:
+            return
+        if self.flags.is_flagged(node):
+            self.flags.unflag(node)
+            return
+        note = ask_flag_note(self, node)
+        if note is not None:
+            self.flags.flag(node, note)
+
+    def _node_menu(self, pos):
+        row = self.gpu_nodes_table.rowAt(pos.y())
+        if row < 0:
+            return
+        self.gpu_nodes_table.selectRow(row)
+        node = self._selected_node()
+        if node is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Remove flag" if self.flags.is_flagged(node)
+                       else "Flag node as bad…", self._toggle_flag_selected)
+        menu.exec_(self.gpu_nodes_table.viewport().mapToGlobal(pos))
+
+    def _on_flags_changed(self):
+        self._render_gpu_nodes()
+
+    def _avoid_cell(self, name, avoided):
+        """The "Avoid" column: your own flag first, else what other users do."""
+        count = avoided.get(name, 0)
+        others = (f"{count} other user{'s' if count != 1 else ''} "
+                  f"{'have' if count != 1 else 'has'} a queued job that excludes this node")
+        if self.flags.is_flagged(name):
+            item = SortItem("You " + self.flags.describe(name), sort_key=1000 + count)
+            item.setForeground(theme.color("danger"))
+            item.setToolTip(item.text() + (f". Also, {others}." if count else ""))
+        elif count >= 2:
+            # One person's exclusion list says little (and is often long); two or
+            # more agreeing on a node is worth showing.
+            item = SortItem(f"{count} users avoid it", sort_key=count)
+            suspect = count >= cv.SUSPECT_MIN_USERS
+            item.setForeground(theme.color("warn" if suspect else "muted"))
+            item.setToolTip(others + (" — it may be faulty." if suspect else "."))
+        else:
+            item = SortItem("", sort_key=count)
+            if count:
+                item.setToolTip(others + ".")
+        return item
+
     # --- rendering -------------------------------------------------------------
 
     def _render_tiles(self):
@@ -300,6 +377,8 @@ class NodeStatusWidget(QWidget):
         if only_idle:
             nodes = [n for n in nodes if n["gpu_total"] - n["gpu_used"] > 0]
         nodes.sort(key=lambda n: n["name"])
+        avoided = self.snapshot.get("avoided", {})
+        selected = self._selected_node()    # refilling the table drops the selection
 
         table.setSortingEnabled(False)
         table.setRowCount(len(nodes))
@@ -341,12 +420,19 @@ class NodeStatusWidget(QWidget):
                 room_item.setForeground(theme.color("muted"))
             table.setItem(row, 5, room_item)
             table.setItem(row, 6, SortItem(cv.base_state(node["state"]) or node["state"]))
+            table.setItem(row, 7, self._avoid_cell(node["name"], avoided))
         table.setSortingEnabled(True)
+        if selected:
+            for row in range(table.rowCount()):
+                if table.item(row, 0).text() == selected:
+                    table.selectRow(row)
+                    break
+        self._update_flag_button()
 
         idle_total = sum(n["gpu_total"] - n["gpu_used"] for n in nodes)
         startable = sum(cv.room(n)["gpus"] for n in nodes)
         self.gpu_summary.setText(
-            f"{len(nodes)} nodes · {idle_total} idle GPUs · {startable} startable now")
+            f"{len(nodes)} nodes · {idle_total} idle · {startable} startable")
 
     def _render_queue(self):
         snapshot = self.snapshot

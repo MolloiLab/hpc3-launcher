@@ -13,7 +13,12 @@ cluster snapshot (``modules/cluster_view``):
     default, that account is chosen for you),
   * whether the request fits on a GPU that is idle right now, and if not, the
     largest request that would,
-  * Slurm's own start-time estimate for exactly this request, on demand.
+  * Slurm's own start-time estimate for exactly this request, on demand, and the
+    same estimate for every other GPU model side by side.
+
+Nodes you have flagged as bad (``modules/node_flags``) are remembered and every
+launch is kept off them; a node that several other users' queued jobs avoid is
+pointed out so it can be flagged in one click.
 """
 
 import logging
@@ -32,12 +37,13 @@ from modules.auth import HPC_SERVER, get_all_existing_users
 from modules.balance import BalanceManager
 from modules import hpc3_constraints as hc
 from modules import cluster_view as cv
+from modules.node_flags import NodeFlagStore, valid_node
 from core.ssh_session import SSHWorker
 from ui.status_view import LiveStatusView
 from ui.checkable_combo import CheckableComboBox
 from ui.components import (
-    Card, PageHeader, SegmentedControl, PillDelegate, button, label, divider,
-    make_table, page_layout, set_tone,
+    Card, PageHeader, SegmentedControl, PillDelegate, ask_flag_note, button, label,
+    divider, make_table, page_layout, set_tone,
 )
 
 logger = logging.getLogger('VSCodeWidget')
@@ -84,12 +90,29 @@ def friendly_time(iso):
     return f"{when:%b %d, %H:%M}"
 
 
+def friendly_wait(iso, now=None):
+    """How long until an ISO time, in a few characters: 'now', 'in 20 min',
+    'in 11 h', 'in 3.7 days'."""
+    try:
+        when = datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S")
+    except (ValueError, TypeError):
+        return iso or ""
+    minutes = (when - (now or datetime.now())).total_seconds() / 60.0
+    if minutes < 2:
+        return "now"
+    if minutes < 90:
+        return f"in {int(round(minutes))} min"
+    if minutes < 36 * 60:
+        return f"in {int(round(minutes / 60.0))} h"
+    return f"in {minutes / 1440.0:.1f} days"
+
+
 class VSCodeWidget(QWidget):
     """VSCode remote sessions: configure, launch, and connect."""
 
     SYNC_INTERVAL_MS = 60_000  # how often the queue is checked against ~/.ssh/config
 
-    def __init__(self, parent=None, username=None, insights=None):
+    def __init__(self, parent=None, username=None, insights=None, flags=None):
         super().__init__(parent)
 
         # User information
@@ -98,6 +121,10 @@ class VSCodeWidget(QWidget):
         self.balance_manager = None
         self.insights = insights      # shared read-only cluster snapshot source
         self.snapshot = None
+        # Nodes flagged as bad; every launch is kept off them. Shared with the
+        # GPUs & nodes page when the main window passes one in.
+        self.flags = flags if flags is not None else NodeFlagStore(self._settings, self)
+        self.flags.changed.connect(self._on_flags_changed)
 
         # Account information
         self.accounts = []
@@ -120,6 +147,9 @@ class VSCodeWidget(QWidget):
         self._sync_worker = None
         self._snapshot_worker = None
         self._shrink_target = None
+        self._compare_worker = None
+        self._compare_key = None
+        self._compare_rows = []
 
         # Initialization complete flag
         self.initialization_complete = False
@@ -215,7 +245,10 @@ class VSCodeWidget(QWidget):
         balance = self.balance_manager.get_user_balance(reporter=rep)
         accounts = []
         if balance and balance.get('accounts'):
-            accounts = [{'name': a['name'], 'is_personal': a['is_personal'],
+            # sbank prints account names in capitals; Slurm itself (sshare, squeue,
+            # sbatch) uses lower case. One spelling from here on, or the priority
+            # lookup below matches nothing.
+            accounts = [{'name': a['name'].lower(), 'is_personal': a['is_personal'],
                          'available': a['available']} for a in balance['accounts']]
         rep.state("checking", "looking for a running VSCode session")
         try:
@@ -240,7 +273,7 @@ class VSCodeWidget(QWidget):
         self.status_label.setText("Could not load your accounts")
 
     def _on_options_loaded(self, data):
-        self.accounts = data['accounts']
+        self.accounts = [dict(a, name=a['name'].lower()) for a in data['accounts']]
         self.partition_nodes = data.get('nodes') or {}
         self.snapshot = data.get('snapshot')
         self._populate_account_combo()
@@ -442,6 +475,7 @@ class VSCodeWidget(QWidget):
                 table.selectRow(row)
         table.blockSignals(False)
         self.cancel_btn.setEnabled(self.selected_job_id in self.sessions)
+        self._update_flag_button()
         self._rebuild_exclude_options()  # a session's node may have just appeared
         n = len(self.sessions)
         running = sum(1 for s in self.sessions.values()
@@ -455,10 +489,12 @@ class VSCodeWidget(QWidget):
         if not items:
             self.selected_job_id = None
             self.cancel_btn.setEnabled(False)
+            self._update_flag_button()
             return
         jid = self.sessions_table.item(items[0].row(), 0).data(Qt.UserRole)
         self.selected_job_id = jid
         self.cancel_btn.setEnabled(True)
+        self._update_flag_button()
         info = self.sessions.get(jid)
         if not info:
             return
@@ -494,7 +530,8 @@ class VSCodeWidget(QWidget):
             tier = "free" if info['partition'].startswith('free') else "paid"
             lines.append(f"Partition:   {info['partition']}  ({tier})")
         if info.get('node'):
-            lines.append(f"Node:        {info['node']}")
+            flagged = self.flags.describe(info['node'])
+            lines.append(f"Node:        {info['node']}" + (f"  ({flagged})" if flagged else ""))
         if info.get('account'):
             lines.append(f"Account:     {info['account']}")
         if info.get('cpus'):
@@ -515,7 +552,7 @@ class VSCodeWidget(QWidget):
             if info.get('start_estimate'):
                 lines.append(f"Est. start:  {friendly_time(info['start_estimate'])}")
         if info.get('exclude_nodes'):
-            lines.append(f"Avoiding:    {', '.join(info['exclude_nodes'])}")
+            lines.append(f"Kept off:    {', '.join(info['exclude_nodes'])}")
         if 'submit_time' in info:
             lines.append("Submitted:   " +
                          time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(info['submit_time'])))
@@ -654,12 +691,15 @@ class VSCodeWidget(QWidget):
         self._field(grid, row, "RUN TIME", self.time_combo, 1)
         row += 1
 
-        # 8. Exclude nodes -- tick any node Slurm should keep the job off (sbatch
-        #    --exclude), e.g. one whose GPU is broken. Your own sessions' nodes are
-        #    listed first, so "not that node again" is two clicks.
-        self.exclude_combo = CheckableComboBox(empty_text="None — any node")
+        # 8. Bad nodes -- tick any node Slurm should keep your jobs off (sbatch
+        #    --exclude), e.g. one whose GPU is broken. A tick is a flag: it is
+        #    remembered until you untick it. Flagged nodes are listed first, then
+        #    your own sessions' nodes, so "not that node again" is two clicks.
+        self.exclude_combo = CheckableComboBox(empty_text="None flagged — any node")
+        self.exclude_combo.setToolTip(
+            "Tick a node to keep every launch off it. Remembered until you untick it.")
         self.exclude_combo.checked_changed.connect(self.on_exclude_changed)
-        self._field(grid, row, "AVOID NODES", self.exclude_combo, 0, 2)
+        self._field(grid, row, "BAD NODES TO AVOID", self.exclude_combo, 0, 2)
         form.body.addLayout(grid)
 
         # What will actually be requested, in one line.
@@ -679,12 +719,27 @@ class VSCodeWidget(QWidget):
         buttons.addWidget(self.estimate_btn)
         form.body.addLayout(buttons)
 
-        # The free-tier advice: priority, fit, start estimate.
-        self.advice_card = QFrame()
-        self.advice_card.setProperty("card", "soft")
-        advice = QVBoxLayout(self.advice_card)
-        advice.setContentsMargins(12, 10, 12, 10)
-        advice.setSpacing(8)
+        form_host_layout.addWidget(form)
+        form_host_layout.addStretch(1)
+        form_scroll.setWidget(form_host)
+        columns.addWidget(form_scroll, 0)
+
+        # ---- right: free-tier outlook, sessions, connection details -------------
+        right = QVBoxLayout()
+        right.setSpacing(16)
+
+        # What decides how soon a free job starts: priority, fit, bad nodes, and
+        # Slurm's own estimates. First thing on the right so it is never scrolled
+        # out of sight (it used to sit under the form, below the fold).
+        self.advice_card = Card("Free-tier outlook")
+        advice = self.advice_card.body
+        advice.setSpacing(6)
+        # Slurm's start estimate for this same size on every GPU model.
+        self.compare_btn = button("Which GPU starts soonest?", None, self.compare_starts)
+        self.compare_btn.setToolTip(
+            "Asks Slurm when this size of job would start on each GPU model. "
+            "Nothing is submitted.")
+        self.advice_card.add_action(self.compare_btn)
 
         prio_row = QHBoxLayout()
         prio_row.setSpacing(8)
@@ -704,22 +759,30 @@ class VSCodeWidget(QWidget):
         fit_row.addWidget(self.shrink_btn, 0, Qt.AlignTop)
         advice.addLayout(fit_row)
 
+        suspect_row = QHBoxLayout()
+        suspect_row.setSpacing(8)
+        self.suspect_label = label("", wrap=True)
+        suspect_row.addWidget(self.suspect_label, 1)
+        self.avoid_suspect_btn = button("Avoid it", "ghost", self._avoid_suspects)
+        suspect_row.addWidget(self.avoid_suspect_btn, 0, Qt.AlignTop)
+        advice.addLayout(suspect_row)
+        self._suspects = []
+
         self.time_hint_label = label("", "muted", wrap=True)
         advice.addWidget(self.time_hint_label)
 
         self.estimate_label = label("", "muted", wrap=True)
         self.estimate_label.hide()
         advice.addWidget(self.estimate_label)
-        form.body.addWidget(self.advice_card)
 
-        form_host_layout.addWidget(form)
-        form_host_layout.addStretch(1)
-        form_scroll.setWidget(form_host)
-        columns.addWidget(form_scroll, 0)
-
-        # ---- right: sessions + connection details -----------------------------
-        right = QVBoxLayout()
-        right.setSpacing(16)
+        # One small tile per GPU model, soonest first (filled by compare_starts).
+        self.compare_box = QWidget()
+        self.compare_row = QHBoxLayout(self.compare_box)
+        self.compare_row.setContentsMargins(0, 4, 0, 0)
+        self.compare_row.setSpacing(8)
+        self.compare_box.hide()
+        advice.addWidget(self.compare_box)
+        right.addWidget(self.advice_card, 0)
 
         sessions_card = Card("Your sessions")
         self.sessions_label = label("No sessions yet — launch one on the left.", "muted")
@@ -727,6 +790,10 @@ class VSCodeWidget(QWidget):
         # Cancel the session selected in the table below.
         self.cancel_btn = button("Cancel session", "danger", self.cancel_selected_session)
         self.cancel_btn.setEnabled(False)  # Enabled when a session is selected
+        # Flag the selected session's node as bad: later launches stay off it.
+        self.flag_btn = button("Flag node as bad", "ghost", self._toggle_flag_selected)
+        self.flag_btn.setEnabled(False)
+        sessions_card.add_action(self.flag_btn)
         sessions_card.add_action(self.cancel_btn)
 
         self.sessions_table = make_table(["Job", "State", "Queue", "Status"],
@@ -737,7 +804,7 @@ class VSCodeWidget(QWidget):
         self.sessions_table.setColumnWidth(0, 104)
         self.sessions_table.setColumnWidth(1, 104)
         self.sessions_table.setColumnWidth(2, 108)
-        self.sessions_table.setMinimumHeight(150)
+        self.sessions_table.setMinimumHeight(110)
         self.sessions_table.itemSelectionChanged.connect(self._on_session_selected)
         sessions_card.body.addWidget(self.sessions_table)
         right.addWidget(sessions_card, 3)
@@ -772,7 +839,15 @@ class VSCodeWidget(QWidget):
         details.body.addWidget(result_widget)
         right.addWidget(details, 4)
 
-        columns.addLayout(right, 1)
+        right_host = QWidget()
+        right.setContentsMargins(0, 0, 6, 0)
+        right_host.setLayout(right)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_scroll.setWidget(right_host)
+        columns.addWidget(right_scroll, 1)
         outer.addLayout(columns, 1)
 
         # Live status surface stays pinned at the bottom so the spinner/log is
@@ -835,9 +910,64 @@ class VSCodeWidget(QWidget):
         self._apply_cascade()
 
     def on_exclude_changed(self):
-        # Status line only -- nothing else depends on the exclusions, and rebuilding
-        # the picker's rows from inside its own click would disturb the open popup.
+        # A tick is a flag. The store answers with `changed`, which refreshes the
+        # summary and the advice (the picker's own rows are left alone while its
+        # popup is open -- see _rebuild_exclude_options).
+        self.flags.set_names(self.exclude_combo.checked_values())
+
+    # --- bad nodes --------------------------------------------------------------
+
+    def _avoided(self):
+        """The nodes a launch is kept off: the flagged ones the cluster still has.
+
+        A flag can outlive its node, and ``sbatch --exclude`` rejects a name it
+        does not know -- which would fail every launch with a baffling error.
+        """
+        names = self.flags.names()
+        nodes = (self.snapshot or {}).get('nodes')
+        return [n for n in names if n in nodes] if nodes else names
+
+    def _on_flags_changed(self):
+        self._update_flag_button()
+        self._rebuild_exclude_options()
+        if self._applying:
+            return
         self._update_status_line()
+        self._update_advice()
+
+    def _selected_node(self):
+        node = (self.sessions.get(self.selected_job_id) or {}).get('node')
+        return node if valid_node(node) and node != 'Unknown' else None
+
+    def _update_flag_button(self):
+        node = self._selected_node()
+        self.flag_btn.setEnabled(node is not None)
+        if node and self.flags.is_flagged(node):
+            self.flag_btn.setText("Remove flag")
+            self.flag_btn.setToolTip(f"{node} is {self.flags.describe(node)}. "
+                                     "Click to let jobs use it again.")
+        else:
+            self.flag_btn.setText("Flag node as bad")
+            self.flag_btn.setToolTip(
+                f"Keep every future launch off {node}." if node else
+                "Select a session that has a node to flag that node.")
+
+    def _toggle_flag_selected(self):
+        node = self._selected_node()
+        if node is None:
+            return
+        if self.flags.is_flagged(node):
+            self.flags.unflag(node)
+            return
+        note = ask_flag_note(self, node)
+        if note is not None:
+            self.flags.flag(node, note)
+
+    def _avoid_suspects(self):
+        if self._suspects:
+            node = self._suspects[0]
+            count = (self.snapshot or {}).get('avoided', {}).get(node, 0)
+            self.flags.flag(node, f"{count} other users' queued jobs avoid it")
 
     def _request(self):
         """The current form as a dict, or None while no account is chosen."""
@@ -858,17 +988,24 @@ class VSCodeWidget(QWidget):
         }
 
     def _rebuild_exclude_options(self):
-        """Repopulate the exclude picker: your sessions' nodes first, then the rest
-        of the partition the form currently targets. Ticked nodes always stay listed
-        (even after switching partition) so an exclusion can never be hidden."""
-        checked = self.exclude_combo.checked_values()
+        """Repopulate the bad-node picker: flagged nodes first (always listed, so a
+        flag can never be hidden), then your sessions' nodes, then the rest of the
+        partition the form currently targets. Nodes that other users' queued jobs
+        avoid say so."""
+        checked = self.flags.names()
+        avoided = (self.snapshot or {}).get('avoided', {})
         items, seen = [], set()
 
         def add(node, note=""):
             if node and node not in seen:
                 seen.add(node)
+                count = avoided.get(node, 0)
+                if count >= 2 and not note:
+                    note = f"  — {count} other users avoid it"
                 items.append((f"{node}{note}", node))
 
+        for node in checked:
+            add(node, f"  — {self.flags.describe(node)}")
         for jid, info in sorted(self.sessions.items()):
             node = info.get('node')
             if node and node != 'Unknown':
@@ -878,13 +1015,12 @@ class VSCodeWidget(QWidget):
             for part in req['partition'].split(","):
                 for node, state in self.partition_nodes.get(part, []):
                     add(node, "" if state in ("idle", "mixed", "allocated") else f"  ({state})")
-        for node in checked:
-            add(node)
         # Session polling lands here every few seconds: leave the rows alone when
         # nothing changed, and never swap them out from under an open popup.
-        if items == self._exclude_items or self.exclude_combo.view().isVisible():
+        state = (items, checked)
+        if state == self._exclude_items or self.exclude_combo.view().isVisible():
             return
-        self._exclude_items = items
+        self._exclude_items = state
         self.exclude_combo.set_items(items, checked)
         self.exclude_combo.setEnabled(bool(items))
 
@@ -1014,9 +1150,9 @@ class VSCodeWidget(QWidget):
             text += f" · up to <b>{high:,} SUs</b>"
         else:
             text += f" · up to <b>{low:,}–{high:,} SUs</b>"
-        excluded = self.exclude_combo.checked_values()
+        excluded = self._avoided()
         if excluded:
-            text += f"<br>Avoiding {', '.join(excluded)}"
+            text += f"<br>Kept off {', '.join(excluded)}"
         self.status_label.setText(text)
 
     # --- free-tier advice ------------------------------------------------------
@@ -1031,6 +1167,8 @@ class VSCodeWidget(QWidget):
         self.advice_card.setVisible(True)
         self._update_priority_advice(req)
         self._update_fit_advice(req)
+        self._update_suspect_advice(req)
+        self._update_compare(req)
         hours = hc.parse_runtime_hours(req['time_limit'])
         if hours > 12:
             self.time_hint_label.setText(
@@ -1082,15 +1220,18 @@ class VSCodeWidget(QWidget):
         self.fit_label.show()
         mem_gb = hc.parse_mem_gb(req['memory'])
         report = cv.fit_report(self.snapshot['nodes'], req['family'], req['gpu_type'],
-                               req['gpu_count'], req['cpus'], mem_gb, use_free=True)
+                               req['gpu_count'], req['cpus'], mem_gb, use_free=True,
+                               exclude=self._avoided())
         what = req['gpu_type'] or "GPU"
         plural = "s" if req['gpu_count'] != 1 else ""
+        skipped = report['avoided_idle']
+        aside = (f" ({skipped} more idle on a node you flagged.)" if skipped else "")
         if report['fits']:
             first = report['fits'][0]
             more = len(report['fits']) - 1
             self.fit_label.setText(
                 f"<b>Fits right now</b> on {first}" + (f" and {more} more" if more else "")
-                + " — idle GPU, cores and memory to spare.")
+                + " — idle GPU, cores and memory to spare." + aside)
             set_tone(self.fit_label, "ok")
             return
         best = report['best']
@@ -1101,18 +1242,159 @@ class VSCodeWidget(QWidget):
                        f"with {req['gpu_count']} free and spare cores")
             else:
                 why = f"no idle {what} right now"
-            self.fit_label.setText(f"<b>Will queue</b> — {why}.")
+            self.fit_label.setText(f"<b>Will queue</b> — {why}.{aside}")
             set_tone(self.fit_label, None)
             return
         target = self._largest_memory_that_fits(best, req)
         self.fit_label.setText(
             f"<b>Too big for what's idle.</b> {best['name']} has {req['gpu_count']} idle "
             f"{what}{plural} but only {best['cpus']} cores / {best['mem_gb']} GB left."
-            + (f" {target} would start now." if target else ""))
+            + (f" {target} would start now." if target else "") + aside)
         set_tone(self.fit_label, "warn")
         if target:
             self._shrink_target = target
             self.shrink_btn.show()
+
+    def _update_suspect_advice(self, req):
+        """Point out a node in this request's pool that other users steer clear of."""
+        self._suspects = []
+        if req['gpu_type'] is not None:
+            avoided = self.snapshot.get('avoided', {})
+            pool = {n['name'] for n in cv.nodes_for(self.snapshot['nodes'], req['family'],
+                                                    req['gpu_type'] or None)}
+            self._suspects = [n for n in cv.suspect_nodes(avoided)
+                              if n in pool and not self.flags.is_flagged(n)]
+        if not self._suspects:
+            self.suspect_label.hide()
+            self.avoid_suspect_btn.hide()
+            return
+        # One at a time, most-avoided first: every flag shrinks the pool the job
+        # can start on, so each one is its own decision.
+        first = self._suspects[0]
+        more = len(self._suspects) - 1
+        self.suspect_label.setText(
+            f"<b>{first} may be faulty</b> — {self.snapshot['avoided'][first]} other "
+            f"users' queued jobs avoid it." + (f" ({more} more like it.)" if more else ""))
+        set_tone(self.suspect_label, "warn")
+        self.suspect_label.show()
+        self.avoid_suspect_btn.show()
+
+    # --- which GPU starts soonest ----------------------------------------------
+
+    def _comparison_rows(self, req):
+        """This request re-cut for each GPU model: [(family, model, gpus, kwargs)].
+
+        The size is kept (memory, run time, account, avoided nodes); the GPU count
+        is clamped to what one node of that model has, and the cores follow the
+        partition's memory-per-core rule, exactly as the form would derive them.
+        """
+        rows = []
+        mem_gb = hc.parse_mem_gb(req['memory'])
+        want = max(1, req['gpu_count'])
+        for family in ("gpu32", "gpu"):
+            for model in hc._FAMILY_MODEL_ORDER[family]:
+                gpus = min(want, hc.max_gpus_for(model, family))
+                cpus = min(hc.required_cpus(mem_gb, gpus, req['account'], model, True, family),
+                           hc.max_cpus_for(model, family))
+                rows.append((family, model, gpus, dict(
+                    cpus=cpus, memory=req['memory'], gpu_type=model, gpu_count=gpus,
+                    account=req['account'], time_limit=req['time_limit'], use_free=True,
+                    exclude_nodes=self._avoided(), family=family)))
+        return rows
+
+    def _comparison_key(self, req):
+        # Everything the estimates depend on except the GPU pick itself.
+        return (req['account'], max(1, req['gpu_count']), req['memory'], req['time_limit'],
+                tuple(self._avoided()))
+
+    def _update_compare(self, req):
+        usable = req['gpu_type'] is not None and self.insights is not None
+        self.compare_btn.setVisible(usable)
+        running = self._compare_worker is not None and self._compare_worker.isRunning()
+        self.compare_btn.setEnabled(usable and not running)
+        if not usable or self._comparison_key(req) != self._compare_key:
+            self.compare_box.hide()      # the size changed: those estimates are stale
+        elif self._compare_key is not None:
+            self._mark_compared_choice(req)
+
+    def compare_starts(self):
+        """Ask Slurm when this size of job would start on each GPU model."""
+        req = self._request()
+        if req is None or self.insights is None or req['gpu_type'] is None:
+            return
+        rows = self._comparison_rows(req)
+        try:
+            commands = [build_sbatch_command(test_only=True, **kwargs)
+                        for _family, _model, _gpus, kwargs in rows]
+        except ValueError as e:
+            self.show_error(str(e))
+            return
+        key = self._comparison_key(req)
+        self.compare_btn.setEnabled(False)
+        self.compare_btn.setText("Asking Slurm…")
+        worker = SSHWorker(lambda rep: self.insights.estimate_starts(commands),
+                           parent=self, label="compare")
+        worker.succeeded.connect(lambda results: self._on_comparison(key, rows, results))
+        worker.failed.connect(lambda message, hint: self._on_comparison(key, rows, None))
+        self._compare_worker = worker
+        worker.start()
+
+    def _on_comparison(self, key, rows, results):
+        self.compare_btn.setText("Which GPU starts soonest?")
+        self.compare_btn.setEnabled(True)
+        while self.compare_row.count():
+            item = self.compare_row.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._compare_rows = []
+        self._compare_key = key
+        if results is None:
+            self.compare_row.addWidget(label("Could not reach Slurm for the estimates.",
+                                             "muted", wrap=True), 1)
+            self.compare_box.show()
+            return
+        merged = [(family, model, gpus, result)
+                  for (family, model, gpus, _kw), result in zip(rows, results)]
+        # Soonest first; anything Slurm would reject goes last.
+        merged.sort(key=lambda r: (not r[3].get('ok'), r[3].get('start') or ""))
+        for family, model, gpus, result in merged:
+            # One tile per model; clicking it switches the form to that GPU.
+            name = f"{gpus} × {model}" if gpus > 1 else model
+            vram = f"{hc.GPU_MODELS[model]['vram_gb']} GB"
+            if result.get('ok'):
+                when = friendly_wait(result['start'])
+                tip = (f"Slurm's estimate for this size on {model}: "
+                       f"{friendly_time(result['start'])}"
+                       + (f", on {result['node']}" if result.get('node') else "")
+                       + ". Click to switch the form to it.")
+            else:
+                when = "won't run"
+                tip = result.get('message') or "Slurm would reject this size here"
+            tile = button(f"{name}\n{vram}\n{when}", "tile",
+                          lambda _c=False, f=family, m=model: self._use_gpu(f, m))
+            tile.setCheckable(True)
+            tile.setEnabled(bool(result.get('ok')))
+            tile.setToolTip(tip)
+            self.compare_row.addWidget(tile, 1)
+            self._compare_rows.append((family, model, tile, when))
+        self.compare_box.show()
+        req = self._request()
+        if req is not None:
+            self._update_compare(req)
+
+    def _mark_compared_choice(self, req):
+        """Highlight the tile for the GPU the form is on."""
+        for family, model, tile, _when in self._compare_rows:
+            tile.setChecked((req['family'], req['gpu_type']) == (family, model))
+        self.compare_box.show()
+
+    def _use_gpu(self, family, model):
+        index = self.gpu_combo.findData(encode_choice(family, model))
+        if index >= 0:
+            self.gpu_combo.setCurrentIndex(index)
+        req = self._request()
+        if req is not None and self._compare_rows:
+            self._mark_compared_choice(req)   # a click toggles the tile; put it right
 
     def _largest_memory_that_fits(self, room, req):
         """The biggest memory option whose derived core count fits ``room``."""
@@ -1147,7 +1429,7 @@ class VSCodeWidget(QWidget):
                 cpus=req['cpus'], memory=req['memory'], gpu_type=req['gpu_type'],
                 gpu_count=max(1, req['gpu_count']), account=req['account'],
                 time_limit=req['time_limit'], use_free=req['use_free'],
-                exclude_nodes=self.exclude_combo.checked_values(),
+                exclude_nodes=self._avoided(),
                 family=req['family'], test_only=True)
         except ValueError as e:
             self.show_error(str(e))
@@ -1249,7 +1531,7 @@ class VSCodeWidget(QWidget):
             cpus=req['cpus'], memory=req['memory'], gpu_type=req['gpu_type'],
             gpu_count=max(1, req['gpu_count']), account=req['account'],
             time_limit=req['time_limit'], use_free=req['use_free'], family=req['family'],
-            exclude_nodes=self.exclude_combo.checked_values(),
+            exclude_nodes=self._avoided(),
         )
         self._remember_request(req)
         # Each launch is independent -- multiple sessions can run at once, so we

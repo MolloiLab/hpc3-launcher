@@ -144,6 +144,27 @@ class TestSnapshotFromRealOutput(unittest.TestCase):
         report = cv.fit_report(self.nodes, "gpu32", "", 1, 2, 12)
         self.assertEqual(report["fits"], ["hpc3-gpu-m54-02", "hpc3-gpu-n54-00"])
 
+    def test_fit_report_leaves_out_nodes_the_job_is_kept_off(self):
+        # "Fits right now on n54-00" is no use if n54-00 is the broken node.
+        report = cv.fit_report(self.nodes, "gpu32", "RTX6000", 1, 3, 16,
+                               exclude=["hpc3-gpu-n54-00"])
+        self.assertEqual(report["fits"], [])
+        self.assertEqual(report["avoided_idle"], 1)
+        self.assertEqual(report["idle_gpus"], 4)
+        self.assertNotEqual((report["best"] or {}).get("name"), "hpc3-gpu-n54-00")
+        self.assertEqual(cv.fit_report(self.nodes, "gpu32", "RTX6000", 1, 3, 16)
+                         ["avoided_idle"], 0)
+
+    def test_nodes_other_users_avoid(self):
+        # Six different people keep their queued jobs off n54-00; counted per user,
+        # however many array tasks each has waiting.
+        avoided = self.snap["avoided"]
+        self.assertEqual(avoided["hpc3-gpu-n54-00"], 6)
+        self.assertEqual(avoided["hpc3-gpu-n54-01"], 2)
+        self.assertEqual(avoided["hpc3-gpu-k54-07"], 1)
+        self.assertNotIn("hpc3-gpu-n54-02", avoided)
+        self.assertEqual(cv.suspect_nodes(avoided), ["hpc3-gpu-n54-00"])
+
     def test_own_gpus_are_counted(self):
         snap = load_snapshot("user07")
         mine = sum(n.get("gpu_mine", 0) for n in snap["nodes"].values())
@@ -235,6 +256,37 @@ class TestQueueAndPriority(unittest.TestCase):
         self.assertEqual(cv.free_priority(0.13657), 383)
         self.assertEqual(cv.free_priority(1.0), 2110)
 
+    def test_exclusions_are_parsed_and_your_own_do_not_count(self):
+        out = ("free-gpu32|Priority|900|gres/gpu:1|a|hpc3-gpu-n54-[00-01]\n"
+               "free-gpu32|Priority|900|gres/gpu:1|a|hpc3-gpu-n54-00\n"
+               "free-gpu32|Priority|800|gres/gpu:1|b|hpc3-gpu-k54-[02,06-08],hpc3-gpu-n54-00\n"
+               "free-gpu32|Priority|700|gres/gpu:1|me|hpc3-gpu-m54-02\n"
+               "free-gpu32|Priority|600|gres/gpu:1|c|\n"
+               "free-gpu32|Priority|600|gres/gpu:1|d|(null)\n"
+               "free-gpu32|Priority|500|gres/gpu:1|old-five-column-line\n")
+        pending = cv.parse_pending(out)
+        self.assertEqual(len(pending), 7)
+        self.assertEqual(pending[2]["excluded"],
+                         ["hpc3-gpu-k54-02", "hpc3-gpu-k54-06", "hpc3-gpu-k54-07",
+                          "hpc3-gpu-k54-08", "hpc3-gpu-n54-00"])
+        self.assertEqual([pending[i]["excluded"] for i in (4, 5, 6)], [[], [], []])
+        avoided = cv.avoided_nodes(pending, "me")
+        self.assertEqual(avoided["hpc3-gpu-n54-00"], 2)      # a (twice) and b
+        self.assertEqual(avoided["hpc3-gpu-n54-01"], 1)
+        self.assertNotIn("hpc3-gpu-m54-02", avoided)         # only you avoid it
+        self.assertEqual(cv.suspect_nodes(avoided), [])
+        self.assertEqual(cv.suspect_nodes(avoided, minimum=2), ["hpc3-gpu-n54-00"])
+
+    def test_account_names_match_whatever_their_case(self):
+        # sbank prints SYMOLLOI_LAB_GPU; sshare prints symolloi_lab_gpu. Matching
+        # them by exact case found no best account at all.
+        shares = cv.parse_fairshare("demo|0.37\nPI_LAB_GPU|1.000000\npi_lab_gpu32|0.14\n")
+        self.assertEqual(shares, {"demo": 0.37, "pi_lab_gpu": 1.0, "pi_lab_gpu32": 0.14})
+        names = ["DEMO", "PI_LAB_GPU", "PI_LAB_GPU32"]
+        self.assertEqual(cv.best_free_account(names, shares), "PI_LAB_GPU")
+        self.assertEqual(cv.account_share("Pi_Lab_Gpu32", shares), 0.14)
+        self.assertIsNone(cv.account_share("nobody", shares))
+
     def test_best_free_account(self):
         shares = {"demo": 0.37, "pi_lab": 0.38, "pi_lab_gpu": 1.0, "pi_lab_gpu32": 0.14}
         self.assertEqual(cv.best_free_account(list(shares), shares), "pi_lab_gpu")
@@ -297,6 +349,30 @@ class TestInsightsIsReadOnly(unittest.TestCase):
         self.assertEqual(session.commands, [])
         result = insights.estimate_start("sbatch --test-only -p free-gpu32 x.sh")
         self.assertTrue(result["ok"])
+
+    def test_several_estimates_come_back_in_order(self):
+        output = ("sbatch: Job 1 to start at 2026-11-10T06:09:34 a using 6 processors on "
+                  "nodes hpc3-gpu-l54-03 in partition free-gpu\n" + cv._SEP + "\n"
+                  "sbatch: error: Batch job submission failed: Requested node "
+                  "configuration is not available\n" + cv._SEP + "\n"
+                  "sbatch: Job 3 to start at 2026-11-09T19:41:18 a using 6 processors on "
+                  "nodes hpc3-gpu-k54-05 in partition free-gpu\n")
+        session = self.FakeSession(output)
+        insights = cv.ClusterInsights(session, "demo")
+        results = insights.estimate_starts(["sbatch --test-only a.sh"] * 3)
+        self.assertEqual([r["ok"] for r in results], [True, False, True])
+        self.assertEqual(results[2]["node"], "hpc3-gpu-k54-05")
+        self.assertEqual(len(session.commands), 1)            # one round trip
+        self.assertEqual(session.commands[0].count("sbatch --test-only"), 3)
+        # One real submission among them poisons the whole batch.
+        with self.assertRaises(ValueError):
+            insights.estimate_starts(["sbatch --test-only a.sh", "sbatch a.sh"])
+        self.assertEqual(len(session.commands), 1)
+        self.assertEqual(insights.estimate_starts([]), [])
+        # A reply that was cut short still answers every question.
+        short = cv.ClusterInsights(self.FakeSession("garbage"), "demo")
+        self.assertEqual([r["ok"] for r in short.estimate_starts(["sbatch --test-only a"] * 2)],
+                         [False, False])
 
 
 if __name__ == "__main__":

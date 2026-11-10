@@ -10,7 +10,7 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QFont
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QStyledItemDelegate, QStyle, QSizePolicy,
+    QStyledItemDelegate, QStyle, QSizePolicy, QInputDialog,
 )
 
 from ui import theme
@@ -90,6 +90,18 @@ def button(text, variant=None, on_click=None):
     if on_click:
         btn.clicked.connect(on_click)
     return btn
+
+
+def ask_flag_note(parent, node):
+    """Confirm flagging ``node`` as bad and ask why.
+
+    Returns the note (possibly empty), or None if the user backed out.
+    """
+    note, ok = QInputDialog.getText(
+        parent, "Flag node as bad",
+        f"Future launches will be kept off {node} until you remove the flag.\n\n"
+        "What went wrong? (optional)")
+    return note.strip() if ok else None
 
 
 def divider():
